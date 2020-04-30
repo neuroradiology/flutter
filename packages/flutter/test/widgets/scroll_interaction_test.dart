@@ -1,4 +1,4 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -7,11 +7,16 @@ import 'package:flutter/widgets.dart';
 
 void main() {
   testWidgets('Scroll flings twice in a row does not crash', (WidgetTester tester) async {
-    await tester.pumpWidget(new ListView(
-      children: <Widget>[
-        new Container(height: 100000.0)
-      ]
-    ));
+    await tester.pumpWidget(
+      Directionality(
+        textDirection: TextDirection.ltr,
+        child: ListView(
+          children: <Widget>[
+            Container(height: 100000.0),
+          ],
+        ),
+      ),
+    );
 
     final ScrollableState scrollable =
       tester.state<ScrollableState>(find.byType(Scrollable));

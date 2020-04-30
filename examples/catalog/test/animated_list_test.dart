@@ -1,14 +1,13 @@
-// Copyright 2017 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-import '../lib/animated_list.dart' as animated_list_sample;
+import 'package:sample_catalog/animated_list.dart' as animated_list_sample;
 
 void main() {
-  testWidgets("animated_list sample app smoke test", (WidgetTester tester) async {
+  testWidgets('animated_list sample app smoke test', (WidgetTester tester) async {
     animated_list_sample.main();
     await tester.pump();
 

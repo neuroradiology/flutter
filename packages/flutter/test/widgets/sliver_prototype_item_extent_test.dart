@@ -1,4 +1,4 @@
-// Copyright 2017 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -12,27 +12,30 @@ class TestItem extends StatelessWidget {
   final double height;
   @override
   Widget build(BuildContext context) {
-    return new Container(
+    return Container(
       width: width,
       height: height,
-      alignment: FractionalOffset.center,
-      child: new Text('Item $item'),
+      alignment: Alignment.center,
+      child: Text('Item $item', textDirection: TextDirection.ltr),
     );
   }
 }
 
 Widget buildFrame({ int count, double width, double height, Axis scrollDirection }) {
-  return new CustomScrollView(
-    scrollDirection: scrollDirection ?? Axis.vertical,
-    slivers: <Widget>[
-      new SliverPrototypeExtentList(
-        prototypeItem: new TestItem(item: -1, width: width, height: height),
-        delegate: new SliverChildBuilderDelegate(
-          (BuildContext context, int index) => new TestItem(item: index),
-          childCount: count,
+  return Directionality(
+    textDirection: TextDirection.ltr,
+    child: CustomScrollView(
+      scrollDirection: scrollDirection ?? Axis.vertical,
+      slivers: <Widget>[
+        SliverPrototypeExtentList(
+          prototypeItem: TestItem(item: -1, width: width, height: height),
+          delegate: SliverChildBuilderDelegate(
+            (BuildContext context, int index) => TestItem(item: index),
+            childCount: count,
+          ),
         ),
-      ),
-    ],
+      ],
+    ),
   );
 }
 
@@ -106,26 +109,29 @@ void main() {
   });
 
   testWidgets('SliverPrototypeExtentList first item is also the prototype', (WidgetTester tester) async {
-    final List<Widget> items = new List<Widget>.generate(10, (int index) {
-      return new TestItem(key: new ValueKey<int>(index), item: index, height: index == 0 ? 60.0 : null);
+    final List<Widget> items = List<Widget>.generate(10, (int index) {
+      return TestItem(key: ValueKey<int>(index), item: index, height: index == 0 ? 60.0 : null);
     }).toList();
 
     await tester.pumpWidget(
-      new CustomScrollView(
-        slivers: <Widget>[
-          new SliverPrototypeExtentList(
-            prototypeItem: items[0],
-            delegate: new SliverChildBuilderDelegate(
-              (BuildContext context, int index) => items[index],
-              childCount: 10,
+      Directionality(
+        textDirection: TextDirection.ltr,
+        child: CustomScrollView(
+          slivers: <Widget>[
+            SliverPrototypeExtentList(
+              prototypeItem: items[0],
+              delegate: SliverChildBuilderDelegate(
+                (BuildContext context, int index) => items[index],
+                childCount: 10,
+              ),
             ),
-          ),
-        ],
-      )
+          ],
+        ),
+      ),
     );
 
     // Item 0 exists in the list and as the prototype item.
-    expect(tester.widgetList(find.text('Item 0')).length, 2);
+    expect(tester.widgetList(find.text('Item 0', skipOffstage: false)).length, 2);
 
     for (int i = 1; i < 10; i += 1)
       expect(find.text('Item $i'), findsOneWidget);

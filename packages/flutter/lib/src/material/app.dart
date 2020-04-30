@@ -1,35 +1,146 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import 'dart:ui' as ui;
+
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/rendering.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
 import 'arc.dart';
 import 'colors.dart';
+import 'floating_action_button.dart';
+import 'icons.dart';
+import 'material_localizations.dart';
 import 'page.dart';
 import 'theme.dart';
 
-export 'dart:ui' show Locale;
-
-const TextStyle _errorTextStyle = const TextStyle(
-  color: const Color(0xD0FF0000),
+/// [MaterialApp] uses this [TextStyle] as its [DefaultTextStyle] to encourage
+/// developers to be intentional about their [DefaultTextStyle].
+///
+/// In Material Design, most [Text] widgets are contained in [Material] widgets,
+/// which sets a specific [DefaultTextStyle]. If you're seeing text that uses
+/// this text style, consider putting your text in a [Material] widget (or
+/// another widget that sets a [DefaultTextStyle]).
+const TextStyle _errorTextStyle = TextStyle(
+  color: Color(0xD0FF0000),
   fontFamily: 'monospace',
   fontSize: 48.0,
   fontWeight: FontWeight.w900,
   decoration: TextDecoration.underline,
-  decorationColor: const Color(0xFFFFFF00),
-  decorationStyle: TextDecorationStyle.double
+  decorationColor: Color(0xFFFFFF00),
+  decorationStyle: TextDecorationStyle.double,
+  debugLabel: 'fallback style; consider putting your text in a Material',
 );
+
+/// Describes which theme will be used by [MaterialApp].
+enum ThemeMode {
+  /// Use either the light or dark theme based on what the user has selected in
+  /// the system settings.
+  system,
+
+  /// Always use the light mode regardless of system preference.
+  light,
+
+  /// Always use the dark mode (if available) regardless of system preference.
+  dark,
+}
 
 /// An application that uses material design.
 ///
 /// A convenience widget that wraps a number of widgets that are commonly
-/// required for material design applications. It builds upon a
-/// [WidgetsApp] by adding material-design specific functionality, such as
-/// [AnimatedTheme] and [GridPaper]. This widget also configures the top-level
-/// [Navigator]'s observer to perform [Hero] animations.
+/// required for material design applications. It builds upon a [WidgetsApp] by
+/// adding material-design specific functionality, such as [AnimatedTheme] and
+/// [GridPaper].
+///
+/// The [MaterialApp] configures the top-level [Navigator] to search for routes
+/// in the following order:
+///
+///  1. For the `/` route, the [home] property, if non-null, is used.
+///
+///  2. Otherwise, the [routes] table is used, if it has an entry for the route.
+///
+///  3. Otherwise, [onGenerateRoute] is called, if provided. It should return a
+///     non-null value for any _valid_ route not handled by [home] and [routes].
+///
+///  4. Finally if all else fails [onUnknownRoute] is called.
+///
+/// If a [Navigator] is created, at least one of these options must handle the
+/// `/` route, since it is used when an invalid [initialRoute] is specified on
+/// startup (e.g. by another application launching this one with an intent on
+/// Android; see [Window.defaultRouteName]).
+///
+/// This widget also configures the observer of the top-level [Navigator] (if
+/// any) to perform [Hero] animations.
+///
+/// If [home], [routes], [onGenerateRoute], and [onUnknownRoute] are all null,
+/// and [builder] is not null, then no [Navigator] is created.
+///
+/// {@tool snippet}
+/// This example shows how to create a [MaterialApp] that disables the "debug"
+/// banner with a [home] route that will be displayed when the app is launched.
+///
+/// ![The MaterialApp displays a Scaffold ](https://flutter.github.io/assets-for-api-docs/assets/material/basic_material_app.png)
+///
+/// ```dart
+/// MaterialApp(
+///   home: Scaffold(
+///     appBar: AppBar(
+///       title: const Text('Home'),
+///     ),
+///   ),
+///   debugShowCheckedModeBanner: false,
+/// )
+/// ```
+/// {@end-tool}
+///
+/// {@tool snippet}
+/// This example shows how to create a [MaterialApp] that uses the [routes]
+/// `Map` to define the "home" route and an "about" route.
+///
+/// ```dart
+/// MaterialApp(
+///   routes: <String, WidgetBuilder>{
+///     '/': (BuildContext context) {
+///       return Scaffold(
+///         appBar: AppBar(
+///           title: const Text('Home Route'),
+///         ),
+///       );
+///     },
+///     '/about': (BuildContext context) {
+///       return Scaffold(
+///         appBar: AppBar(
+///           title: const Text('About Route'),
+///         ),
+///       );
+///      }
+///    },
+/// )
+/// ```
+/// {@end-tool}
+///
+/// {@tool snippet}
+/// This example shows how to create a [MaterialApp] that defines a [theme] that
+/// will be used for material widgets in the app.
+///
+/// ![The MaterialApp displays a Scaffold with a dark background and a blue / grey AppBar at the top](https://flutter.github.io/assets-for-api-docs/assets/material/theme_material_app.png)
+///
+/// ```dart
+/// MaterialApp(
+///   theme: ThemeData(
+///     brightness: Brightness.dark,
+///     primaryColor: Colors.blueGrey
+///   ),
+///   home: Scaffold(
+///     appBar: AppBar(
+///       title: const Text('MaterialApp Theme'),
+///     ),
+///   ),
+/// )
+/// ```
+/// {@end-tool}
 ///
 /// See also:
 ///
@@ -37,67 +148,66 @@ const TextStyle _errorTextStyle = const TextStyle(
 ///  * [Navigator], which is used to manage the app's stack of pages.
 ///  * [MaterialPageRoute], which defines an app page that transitions in a material-specific way.
 ///  * [WidgetsApp], which defines the basic app elements but does not depend on the material library.
+///  * The Flutter Internationalization Tutorial,
+///    <https://flutter.dev/tutorials/internationalization/>.
 class MaterialApp extends StatefulWidget {
-
   /// Creates a MaterialApp.
   ///
-  /// At least one of [home], [routes], or [onGenerateRoute] must be
-  /// given. If only [routes] is given, it must include an entry for the
-  /// [initialRoute], which defaults to [Navigator.defaultRouteName]
-  /// (`'/'`).
+  /// At least one of [home], [routes], [onGenerateRoute], or [builder] must be
+  /// non-null. If only [routes] is given, it must include an entry for the
+  /// [Navigator.defaultRouteName] (`/`), since that is the route used when the
+  /// application is launched with an intent that specifies an otherwise
+  /// unsupported route.
   ///
   /// This class creates an instance of [WidgetsApp].
-  MaterialApp({
+  ///
+  /// The boolean arguments, [routes], and [navigatorObservers], must not be null.
+  const MaterialApp({
     Key key,
-    this.title,
+    this.navigatorKey,
+    this.home,
+    this.routes = const <String, WidgetBuilder>{},
+    this.initialRoute,
+    this.onGenerateRoute,
+    this.onGenerateInitialRoutes,
+    this.onUnknownRoute,
+    this.navigatorObservers = const <NavigatorObserver>[],
+    this.builder,
+    this.title = '',
+    this.onGenerateTitle,
     this.color,
     this.theme,
-    this.home,
-    this.routes: const <String, WidgetBuilder>{},
-    this.initialRoute: Navigator.defaultRouteName,
-    this.onGenerateRoute,
-    this.onLocaleChanged,
-    this.navigatorObservers: const <NavigatorObserver>[],
-    this.debugShowMaterialGrid: false,
-    this.showPerformanceOverlay: false,
-    this.checkerboardRasterCacheImages: false,
-    this.checkerboardOffscreenLayers: false,
-    this.showSemanticsDebugger: false,
-    this.debugShowCheckedModeBanner: true
-  }) : assert(debugShowMaterialGrid != null),
-       assert(routes != null),
-       assert(!routes.containsKey(initialRoute) || (home == null)),
-       assert(routes.containsKey(initialRoute) || (home != null) || (onGenerateRoute != null)),
+    this.darkTheme,
+    this.themeMode = ThemeMode.system,
+    this.locale,
+    this.localizationsDelegates,
+    this.localeListResolutionCallback,
+    this.localeResolutionCallback,
+    this.supportedLocales = const <Locale>[Locale('en', 'US')],
+    this.debugShowMaterialGrid = false,
+    this.showPerformanceOverlay = false,
+    this.checkerboardRasterCacheImages = false,
+    this.checkerboardOffscreenLayers = false,
+    this.showSemanticsDebugger = false,
+    this.debugShowCheckedModeBanner = true,
+    this.shortcuts,
+    this.actions,
+  }) : assert(routes != null),
+       assert(navigatorObservers != null),
+       assert(title != null),
+       assert(debugShowMaterialGrid != null),
+       assert(showPerformanceOverlay != null),
+       assert(checkerboardRasterCacheImages != null),
+       assert(checkerboardOffscreenLayers != null),
+       assert(showSemanticsDebugger != null),
+       assert(debugShowCheckedModeBanner != null),
        super(key: key);
 
-  /// A one-line description of this app for use in the window manager.
-  final String title;
+  /// {@macro flutter.widgets.widgetsApp.navigatorKey}
+  final GlobalKey<NavigatorState> navigatorKey;
 
-  /// The colors to use for the application's widgets.
-  final ThemeData theme;
-
-  /// The widget for the default route of the app
-  /// ([Navigator.defaultRouteName], which is `'/'`).
-  ///
-  /// This is the page that is displayed first when the application is
-  /// started normally.
-  ///
-  /// To be able to directly call [Theme.of], [MediaQuery.of],
-  /// [LocaleQuery.of], etc, in the code sets the [home] argument in
-  /// the constructor, you can use a [Builder] widget to get a
-  /// [BuildContext].
-  ///
-  /// If this is not specified, then either the route with name `'/'`
-  /// must be given in [routes], or the [onGenerateRoute] callback
-  /// must be able to build a widget for that route.
+  /// {@macro flutter.widgets.widgetsApp.home}
   final Widget home;
-
-  /// The primary color to use for the application in the operating system
-  /// interface.
-  ///
-  /// For example, on Android this is the color used for the application in the
-  /// application switcher.
-  final Color color;
 
   /// The application's top-level routing table.
   ///
@@ -106,31 +216,236 @@ class MaterialApp extends StatefulWidget {
   /// [WidgetBuilder] is used to construct a [MaterialPageRoute] that performs
   /// an appropriate transition, including [Hero] animations, to the new route.
   ///
-  /// If the app only has one page, then you can specify it using [home] instead.
-  ///
-  /// If [home] is specified, then it is an error to provide a route
-  /// in this map for the [Navigator.defaultRouteName] route (`'/'`).
-  ///
-  /// If a route is requested that is not specified in this table (or
-  /// by [home]), then the [onGenerateRoute] callback is called to
-  /// build the page instead.
+  /// {@macro flutter.widgets.widgetsApp.routes}
   final Map<String, WidgetBuilder> routes;
 
-  /// The name of the first route to show.
-  ///
-  /// Defaults to [Window.defaultRouteName].
+  /// {@macro flutter.widgets.widgetsApp.initialRoute}
   final String initialRoute;
 
-  /// The route generator callback used when the app is navigated to a
-  /// named route.
+  /// {@macro flutter.widgets.widgetsApp.onGenerateRoute}
   final RouteFactory onGenerateRoute;
 
-  /// Callback that is called when the operating system changes the
-  /// current locale.
-  final LocaleChangedCallback onLocaleChanged;
+  /// {@macro flutter.widgets.widgetsApp.onGenerateInitialRoutes}
+  final InitialRouteListFactory onGenerateInitialRoutes;
+
+  /// {@macro flutter.widgets.widgetsApp.onUnknownRoute}
+  final RouteFactory onUnknownRoute;
+
+  /// {@macro flutter.widgets.widgetsApp.navigatorObservers}
+  final List<NavigatorObserver> navigatorObservers;
+
+  /// {@macro flutter.widgets.widgetsApp.builder}
+  ///
+  /// Material specific features such as [showDialog] and [showMenu], and widgets
+  /// such as [Tooltip], [PopupMenuButton], also require a [Navigator] to properly
+  /// function.
+  final TransitionBuilder builder;
+
+  /// {@macro flutter.widgets.widgetsApp.title}
+  ///
+  /// This value is passed unmodified to [WidgetsApp.title].
+  final String title;
+
+  /// {@macro flutter.widgets.widgetsApp.onGenerateTitle}
+  ///
+  /// This value is passed unmodified to [WidgetsApp.onGenerateTitle].
+  final GenerateAppTitle onGenerateTitle;
+
+  /// Default visual properties, like colors fonts and shapes, for this app's
+  /// material widgets.
+  ///
+  /// A second [darkTheme] [ThemeData] value, which is used to provide a dark
+  /// version of the user interface can also be specified. [themeMode] will
+  /// control which theme will be used if a [darkTheme] is provided.
+  ///
+  /// The default value of this property is the value of [ThemeData.light()].
+  ///
+  /// See also:
+  ///
+  ///  * [themeMode], which controls which theme to use.
+  ///  * [MediaQueryData.platformBrightness], which indicates the platform's
+  ///    desired brightness and is used to automatically toggle between [theme]
+  ///    and [darkTheme] in [MaterialApp].
+  ///  * [ThemeData.brightness], which indicates the [Brightness] of a theme's
+  ///    colors.
+  final ThemeData theme;
+
+  /// The [ThemeData] to use when a 'dark mode' is requested by the system.
+  ///
+  /// Some host platforms allow the users to select a system-wide 'dark mode',
+  /// or the application may want to offer the user the ability to choose a
+  /// dark theme just for this application. This is theme that will be used for
+  /// such cases. [themeMode] will control which theme will be used.
+  ///
+  /// This theme should have a [ThemeData.brightness] set to [Brightness.dark].
+  ///
+  /// Uses [theme] instead when null. Defaults to the value of
+  /// [ThemeData.light()] when both [darkTheme] and [theme] are null.
+  ///
+  /// See also:
+  ///
+  ///  * [themeMode], which controls which theme to use.
+  ///  * [MediaQueryData.platformBrightness], which indicates the platform's
+  ///    desired brightness and is used to automatically toggle between [theme]
+  ///    and [darkTheme] in [MaterialApp].
+  ///  * [ThemeData.brightness], which is typically set to the value of
+  ///    [MediaQueryData.platformBrightness].
+  final ThemeData darkTheme;
+
+  /// Determines which theme will be used by the application if both [theme]
+  /// and [darkTheme] are provided.
+  ///
+  /// If set to [ThemeMode.system], the choice of which theme to use will
+  /// be based on the user's system preferences. If the [MediaQuery.platformBrightnessOf]
+  /// is [Brightness.light], [theme] will be used. If it is [Brightness.dark],
+  /// [darkTheme] will be used (unless it is [null], in which case [theme]
+  /// will be used.
+  ///
+  /// If set to [ThemeMode.light] the [theme] will always be used,
+  /// regardless of the user's system preference.
+  ///
+  /// If set to [ThemeMode.dark] the [darkTheme] will be used
+  /// regardless of the user's system preference. If [darkTheme] is [null]
+  /// then it will fallback to using [theme].
+  ///
+  /// The default value is [ThemeMode.system].
+  ///
+  /// See also:
+  ///
+  ///  * [theme], which is used when a light mode is selected.
+  ///  * [darkTheme], which is used when a dark mode is selected.
+  ///  * [ThemeData.brightness], which indicates to various parts of the
+  ///    system what kind of theme is being used.
+  final ThemeMode themeMode;
+
+  /// {@macro flutter.widgets.widgetsApp.color}
+  final Color color;
+
+  /// {@macro flutter.widgets.widgetsApp.locale}
+  final Locale locale;
+
+  /// {@macro flutter.widgets.widgetsApp.localizationsDelegates}
+  ///
+  /// Internationalized apps that require translations for one of the locales
+  /// listed in [GlobalMaterialLocalizations] should specify this parameter
+  /// and list the [supportedLocales] that the application can handle.
+  ///
+  /// ```dart
+  /// import 'package:flutter_localizations/flutter_localizations.dart';
+  /// MaterialApp(
+  ///   localizationsDelegates: [
+  ///     // ... app-specific localization delegate[s] here
+  ///     GlobalMaterialLocalizations.delegate,
+  ///     GlobalWidgetsLocalizations.delegate,
+  ///   ],
+  ///   supportedLocales: [
+  ///     const Locale('en', 'US'), // English
+  ///     const Locale('he', 'IL'), // Hebrew
+  ///     // ... other locales the app supports
+  ///   ],
+  ///   // ...
+  /// )
+  /// ```
+  ///
+  /// ## Adding localizations for a new locale
+  ///
+  /// The information that follows applies to the unusual case of an app
+  /// adding translations for a language not already supported by
+  /// [GlobalMaterialLocalizations].
+  ///
+  /// Delegates that produce [WidgetsLocalizations] and [MaterialLocalizations]
+  /// are included automatically. Apps can provide their own versions of these
+  /// localizations by creating implementations of
+  /// [LocalizationsDelegate<WidgetsLocalizations>] or
+  /// [LocalizationsDelegate<MaterialLocalizations>] whose load methods return
+  /// custom versions of [WidgetsLocalizations] or [MaterialLocalizations].
+  ///
+  /// For example: to add support to [MaterialLocalizations] for a
+  /// locale it doesn't already support, say `const Locale('foo', 'BR')`,
+  /// one could just extend [DefaultMaterialLocalizations]:
+  ///
+  /// ```dart
+  /// class FooLocalizations extends DefaultMaterialLocalizations {
+  ///   FooLocalizations(Locale locale) : super(locale);
+  ///   @override
+  ///   String get okButtonLabel {
+  ///     if (locale == const Locale('foo', 'BR'))
+  ///       return 'foo';
+  ///     return super.okButtonLabel;
+  ///   }
+  /// }
+  ///
+  /// ```
+  ///
+  /// A `FooLocalizationsDelegate` is essentially just a method that constructs
+  /// a `FooLocalizations` object. We return a [SynchronousFuture] here because
+  /// no asynchronous work takes place upon "loading" the localizations object.
+  ///
+  /// ```dart
+  /// class FooLocalizationsDelegate extends LocalizationsDelegate<MaterialLocalizations> {
+  ///   const FooLocalizationsDelegate();
+  ///   @override
+  ///   Future<FooLocalizations> load(Locale locale) {
+  ///     return SynchronousFuture(FooLocalizations(locale));
+  ///   }
+  ///   @override
+  ///   bool shouldReload(FooLocalizationsDelegate old) => false;
+  /// }
+  /// ```
+  ///
+  /// Constructing a [MaterialApp] with a `FooLocalizationsDelegate` overrides
+  /// the automatically included delegate for [MaterialLocalizations] because
+  /// only the first delegate of each [LocalizationsDelegate.type] is used and
+  /// the automatically included delegates are added to the end of the app's
+  /// [localizationsDelegates] list.
+  ///
+  /// ```dart
+  /// MaterialApp(
+  ///   localizationsDelegates: [
+  ///     const FooLocalizationsDelegate(),
+  ///   ],
+  ///   // ...
+  /// )
+  /// ```
+  /// See also:
+  ///
+  ///  * [supportedLocales], which must be specified along with
+  ///    [localizationsDelegates].
+  ///  * [GlobalMaterialLocalizations], a [localizationsDelegates] value
+  ///    which provides material localizations for many languages.
+  ///  * The Flutter Internationalization Tutorial,
+  ///    <https://flutter.dev/tutorials/internationalization/>.
+  final Iterable<LocalizationsDelegate<dynamic>> localizationsDelegates;
+
+  /// {@macro flutter.widgets.widgetsApp.localeListResolutionCallback}
+  ///
+  /// This callback is passed along to the [WidgetsApp] built by this widget.
+  final LocaleListResolutionCallback localeListResolutionCallback;
+
+  /// {@macro flutter.widgets.widgetsApp.localeResolutionCallback}
+  ///
+  /// This callback is passed along to the [WidgetsApp] built by this widget.
+  final LocaleResolutionCallback localeResolutionCallback;
+
+  /// {@macro flutter.widgets.widgetsApp.supportedLocales}
+  ///
+  /// It is passed along unmodified to the [WidgetsApp] built by this widget.
+  ///
+  /// See also:
+  ///
+  ///  * [localizationsDelegates], which must be specified for localized
+  ///    applications.
+  ///  * [GlobalMaterialLocalizations], a [localizationsDelegates] value
+  ///    which provides material localizations for many languages.
+  ///  * The Flutter Internationalization Tutorial,
+  ///    <https://flutter.dev/tutorials/internationalization/>.
+  final Iterable<Locale> supportedLocales;
 
   /// Turns on a performance overlay.
-  /// https://flutter.io/debugging/#performanceoverlay
+  ///
+  /// See also:
+  ///
+  ///  * <https://flutter.dev/debugging/#performanceoverlay>
   final bool showPerformanceOverlay;
 
   /// Turns on checkerboarding of raster cache images.
@@ -143,32 +458,82 @@ class MaterialApp extends StatefulWidget {
   /// reported by the framework.
   final bool showSemanticsDebugger;
 
-  /// Turns on a little "SLOW MODE" banner in checked mode to indicate
-  /// that the app is in checked mode. This is on by default (in
-  /// checked mode), to turn it off, set the constructor argument to
-  /// false. In release mode this has no effect.
-  ///
-  /// To get this banner in your application if you're not using
-  /// WidgetsApp, include a [CheckedModeBanner] widget in your app.
-  ///
-  /// This banner is intended to deter people from complaining that your
-  /// app is slow when it's in checked mode. In checked mode, Flutter
-  /// enables a large number of expensive diagnostics to aid in
-  /// development, and so performance in checked mode is not
-  /// representative of what will happen in release mode.
+  /// {@macro flutter.widgets.widgetsApp.debugShowCheckedModeBanner}
   final bool debugShowCheckedModeBanner;
 
-  /// The list of observers for the [Navigator] created for this app.
-  final List<NavigatorObserver> navigatorObservers;
+  /// {@macro flutter.widgets.widgetsApp.shortcuts}
+  /// {@tool snippet}
+  /// This example shows how to add a single shortcut for
+  /// [LogicalKeyboardKey.select] to the default shortcuts without needing to
+  /// add your own [Shortcuts] widget.
+  ///
+  /// Alternatively, you could insert a [Shortcuts] widget with just the mapping
+  /// you want to add between the [WidgetsApp] and its child and get the same
+  /// effect.
+  ///
+  /// ```dart
+  /// Widget build(BuildContext context) {
+  ///   return WidgetsApp(
+  ///     shortcuts: <LogicalKeySet, Intent>{
+  ///       ... WidgetsApp.defaultShortcuts,
+  ///       LogicalKeySet(LogicalKeyboardKey.select): const ActivateIntent(),
+  ///     },
+  ///     color: const Color(0xFFFF0000),
+  ///     builder: (BuildContext context, Widget child) {
+  ///       return const Placeholder();
+  ///     },
+  ///   );
+  /// }
+  /// ```
+  /// {@end-tool}
+  /// {@macro flutter.widgets.widgetsApp.shortcuts.seeAlso}
+  final Map<LogicalKeySet, Intent> shortcuts;
+
+  /// {@macro flutter.widgets.widgetsApp.actions}
+  /// {@tool snippet}
+  /// This example shows how to add a single action handling an
+  /// [ActivateAction] to the default actions without needing to
+  /// add your own [Actions] widget.
+  ///
+  /// Alternatively, you could insert a [Actions] widget with just the mapping
+  /// you want to add between the [WidgetsApp] and its child and get the same
+  /// effect.
+  ///
+  /// ```dart
+  /// Widget build(BuildContext context) {
+  ///   return WidgetsApp(
+  ///     actions: <Type, Action<Intent>>{
+  ///       ... WidgetsApp.defaultActions,
+  ///       ActivateAction: CallbackAction(
+  ///         onInvoke: (Intent intent) {
+  ///           // Do something here...
+  ///           return null;
+  ///         },
+  ///       ),
+  ///     },
+  ///     color: const Color(0xFFFF0000),
+  ///     builder: (BuildContext context, Widget child) {
+  ///       return const Placeholder();
+  ///     },
+  ///   );
+  /// }
+  /// ```
+  /// {@end-tool}
+  /// {@macro flutter.widgets.widgetsApp.actions.seeAlso}
+  final Map<Type, Action<Intent>> actions;
 
   /// Turns on a [GridPaper] overlay that paints a baseline grid
-  /// Material apps:
-  /// https://material.google.com/layout/metrics-keylines.html
+  /// Material apps.
+  ///
   /// Only available in checked mode.
+  ///
+  /// See also:
+  ///
+  ///  * <https://material.io/design/layout/spacing-methods.html>
   final bool debugShowMaterialGrid;
 
   @override
-  _MaterialAppState createState() => new _MaterialAppState();
+  _MaterialAppState createState() => _MaterialAppState();
 }
 
 class _MaterialScrollBehavior extends ScrollBehavior {
@@ -183,10 +548,13 @@ class _MaterialScrollBehavior extends ScrollBehavior {
     // the base class as well.
     switch (getPlatform(context)) {
       case TargetPlatform.iOS:
+      case TargetPlatform.linux:
+      case TargetPlatform.macOS:
+      case TargetPlatform.windows:
         return child;
       case TargetPlatform.android:
       case TargetPlatform.fuchsia:
-        return new GlowingOverscrollIndicator(
+        return GlowingOverscrollIndicator(
           child: child,
           axisDirection: axisDirection,
           color: Theme.of(context).accentColor,
@@ -202,57 +570,139 @@ class _MaterialAppState extends State<MaterialApp> {
   @override
   void initState() {
     super.initState();
-    _heroController = new HeroController(createRectTween: _createRectTween);
+    _heroController = HeroController(createRectTween: _createRectTween);
+    _updateNavigator();
+  }
+
+  @override
+  void didUpdateWidget(MaterialApp oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.navigatorKey != oldWidget.navigatorKey) {
+      // If the Navigator changes, we have to create a new observer, because the
+      // old Navigator won't be disposed (and thus won't unregister with its
+      // observers) until after the new one has been created (because the
+      // Navigator has a GlobalKey).
+      _heroController = HeroController(createRectTween: _createRectTween);
+    }
+    _updateNavigator();
+  }
+
+  List<NavigatorObserver> _navigatorObservers;
+
+  void _updateNavigator() {
+    if (widget.home != null ||
+        widget.routes.isNotEmpty ||
+        widget.onGenerateRoute != null ||
+        widget.onUnknownRoute != null) {
+      _navigatorObservers = List<NavigatorObserver>.from(widget.navigatorObservers)
+        ..add(_heroController);
+    } else {
+      _navigatorObservers = const <NavigatorObserver>[];
+    }
   }
 
   RectTween _createRectTween(Rect begin, Rect end) {
-    return new MaterialRectArcTween(begin: begin, end: end);
+    return MaterialRectArcTween(begin: begin, end: end);
   }
 
-  Route<dynamic> _onGenerateRoute(RouteSettings settings) {
-    WidgetBuilder builder = widget.routes[settings.name];
-    if (builder == null && widget.home != null && settings.name == Navigator.defaultRouteName)
-      builder = (BuildContext context) => widget.home;
-    if (builder != null) {
-      return new MaterialPageRoute<Null>(
-        builder: builder,
-        settings: settings
-      );
-    }
-    if (widget.onGenerateRoute != null)
-      return widget.onGenerateRoute(settings);
-    return null;
+  // Combine the Localizations for Material with the ones contributed
+  // by the localizationsDelegates parameter, if any. Only the first delegate
+  // of a particular LocalizationsDelegate.type is loaded so the
+  // localizationsDelegate parameter can be used to override
+  // _MaterialLocalizationsDelegate.
+  Iterable<LocalizationsDelegate<dynamic>> get _localizationsDelegates sync* {
+    if (widget.localizationsDelegates != null)
+      yield* widget.localizationsDelegates;
+    yield DefaultMaterialLocalizations.delegate;
+    yield DefaultCupertinoLocalizations.delegate;
   }
 
   @override
   Widget build(BuildContext context) {
-    final ThemeData theme = widget.theme ?? new ThemeData.fallback();
-    Widget result = new AnimatedTheme(
-      data: theme,
-      isMaterialAppTheme: true,
-      child: new WidgetsApp(
-        key: new GlobalObjectKey(this),
-        title: widget.title,
-        textStyle: _errorTextStyle,
-        // blue is the primary color of the default theme
-        color: widget.color ?? theme?.primaryColor ?? Colors.blue,
-        navigatorObservers:
-            new List<NavigatorObserver>.from(widget.navigatorObservers)
-              ..add(_heroController),
-        initialRoute: widget.initialRoute,
-        onGenerateRoute: _onGenerateRoute,
-        onLocaleChanged: widget.onLocaleChanged,
-        showPerformanceOverlay: widget.showPerformanceOverlay,
-        checkerboardRasterCacheImages: widget.checkerboardRasterCacheImages,
-        checkerboardOffscreenLayers: widget.checkerboardOffscreenLayers,
-        showSemanticsDebugger: widget.showSemanticsDebugger,
-        debugShowCheckedModeBanner: widget.debugShowCheckedModeBanner,
-      )
+    Widget result = WidgetsApp(
+      key: GlobalObjectKey(this),
+      navigatorKey: widget.navigatorKey,
+      navigatorObservers: _navigatorObservers,
+      pageRouteBuilder: <T>(RouteSettings settings, WidgetBuilder builder) {
+        return MaterialPageRoute<T>(settings: settings, builder: builder);
+      },
+      home: widget.home,
+      routes: widget.routes,
+      initialRoute: widget.initialRoute,
+      onGenerateRoute: widget.onGenerateRoute,
+      onGenerateInitialRoutes: widget.onGenerateInitialRoutes,
+      onUnknownRoute: widget.onUnknownRoute,
+      builder: (BuildContext context, Widget child) {
+        // Use a light theme, dark theme, or fallback theme.
+        final ThemeMode mode = widget.themeMode ?? ThemeMode.system;
+        ThemeData theme;
+        if (widget.darkTheme != null) {
+          final ui.Brightness platformBrightness = MediaQuery.platformBrightnessOf(context);
+          if (mode == ThemeMode.dark ||
+              (mode == ThemeMode.system && platformBrightness == ui.Brightness.dark)) {
+            theme = widget.darkTheme;
+          }
+        }
+        theme ??= widget.theme ?? ThemeData.fallback();
+
+        return AnimatedTheme(
+          data: theme,
+          isMaterialAppTheme: true,
+          child: widget.builder != null
+              ? Builder(
+                  builder: (BuildContext context) {
+                    // Why are we surrounding a builder with a builder?
+                    //
+                    // The widget.builder may contain code that invokes
+                    // Theme.of(), which should return the theme we selected
+                    // above in AnimatedTheme. However, if we invoke
+                    // widget.builder() directly as the child of AnimatedTheme
+                    // then there is no Context separating them, and the
+                    // widget.builder() will not find the theme. Therefore, we
+                    // surround widget.builder with yet another builder so that
+                    // a context separates them and Theme.of() correctly
+                    // resolves to the theme we passed to AnimatedTheme.
+                    return widget.builder(context, child);
+                  },
+                )
+              : child,
+        );
+      },
+      title: widget.title,
+      onGenerateTitle: widget.onGenerateTitle,
+      textStyle: _errorTextStyle,
+      // The color property is always pulled from the light theme, even if dark
+      // mode is activated. This was done to simplify the technical details
+      // of switching themes and it was deemed acceptable because this color
+      // property is only used on old Android OSes to color the app bar in
+      // Android's switcher UI.
+      //
+      // blue is the primary color of the default theme
+      color: widget.color ?? widget.theme?.primaryColor ?? Colors.blue,
+      locale: widget.locale,
+      localizationsDelegates: _localizationsDelegates,
+      localeResolutionCallback: widget.localeResolutionCallback,
+      localeListResolutionCallback: widget.localeListResolutionCallback,
+      supportedLocales: widget.supportedLocales,
+      showPerformanceOverlay: widget.showPerformanceOverlay,
+      checkerboardRasterCacheImages: widget.checkerboardRasterCacheImages,
+      checkerboardOffscreenLayers: widget.checkerboardOffscreenLayers,
+      showSemanticsDebugger: widget.showSemanticsDebugger,
+      debugShowCheckedModeBanner: widget.debugShowCheckedModeBanner,
+      inspectorSelectButtonBuilder: (BuildContext context, VoidCallback onPressed) {
+        return FloatingActionButton(
+          child: const Icon(Icons.search),
+          onPressed: onPressed,
+          mini: true,
+        );
+      },
+      shortcuts: widget.shortcuts,
+      actions: widget.actions,
     );
 
     assert(() {
       if (widget.debugShowMaterialGrid) {
-        result = new GridPaper(
+        result = GridPaper(
           color: const Color(0xE0F9BBE0),
           interval: 8.0,
           divisions: 2,
@@ -261,10 +711,10 @@ class _MaterialAppState extends State<MaterialApp> {
         );
       }
       return true;
-    });
+    }());
 
-    return new ScrollConfiguration(
-      behavior: new _MaterialScrollBehavior(),
+    return ScrollConfiguration(
+      behavior: _MaterialScrollBehavior(),
       child: result,
     );
   }

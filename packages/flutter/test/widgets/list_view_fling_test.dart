@@ -1,4 +1,4 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -9,12 +9,17 @@ const double kHeight = 10.0;
 const double kFlingOffset = kHeight * 20.0;
 
 void main() {
-  testWidgets('Flings don\'t stutter', (WidgetTester tester) async {
-    await tester.pumpWidget(new ListView.builder(
-      itemBuilder: (BuildContext context, int index) {
-        return new Container(height: kHeight);
-      },
-    ));
+  testWidgets("Flings don't stutter", (WidgetTester tester) async {
+    await tester.pumpWidget(
+      Directionality(
+        textDirection: TextDirection.ltr,
+        child: ListView.builder(
+          itemBuilder: (BuildContext context, int index) {
+            return Container(height: kHeight);
+          },
+        ),
+      ),
+    );
 
     double getCurrentOffset() {
       return tester.state<ScrollableState>(find.byType(Scrollable)).position.pixels;

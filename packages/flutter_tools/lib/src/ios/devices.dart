@@ -1,164 +1,215 @@
-// Copyright 2016 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 import 'dart:async';
-import 'dart:convert';
+import 'dart:math' as math;
+
+import 'package:meta/meta.dart';
+import 'package:platform/platform.dart';
+import 'package:vm_service/vm_service.dart' as vm_service;
+import 'package:process/process.dart';
 
 import '../application_package.dart';
+import '../artifacts.dart';
 import '../base/file_system.dart';
 import '../base/io.dart';
-import '../base/platform.dart';
-import '../base/port_scanner.dart';
+import '../base/logger.dart';
 import '../base/process.dart';
-import '../base/process_manager.dart';
 import '../build_info.dart';
+import '../convert.dart';
 import '../device.dart';
-import '../globals.dart';
+import '../globals.dart' as globals;
+import '../macos/xcode.dart';
+import '../mdns_discovery.dart';
+import '../project.dart';
 import '../protocol_discovery.dart';
+import 'fallback_discovery.dart';
+import 'ios_deploy.dart';
 import 'ios_workflow.dart';
 import 'mac.dart';
 
-const String _kIdeviceinstallerInstructions =
-    'To work with iOS devices, please install ideviceinstaller. To install, run:\n'
-    'brew update\n'
-    'brew install ideviceinstaller.';
-
-const Duration kPortForwardTimeout = const Duration(seconds: 10);
-
 class IOSDevices extends PollingDeviceDiscovery {
-  IOSDevices() : super('iOS devices');
+  // TODO(fujino): make these required and remove fallbacks once internal invocations migrated
+  IOSDevices({
+    Platform platform,
+    XCDevice xcdevice,
+    IOSWorkflow iosWorkflow,
+  }) : _platform = platform ?? globals.platform,
+       _xcdevice = xcdevice ?? globals.xcdevice,
+       _iosWorkflow = iosWorkflow ?? globals.iosWorkflow,
+       super('iOS devices');
+
+  final Platform _platform;
+  final XCDevice _xcdevice;
+  final IOSWorkflow _iosWorkflow;
 
   @override
-  bool get supportsPlatform => platform.isMacOS;
+  bool get supportsPlatform => _platform.isMacOS;
 
   @override
-  bool get canListAnything => iosWorkflow.canListDevices;
+  bool get canListAnything => _iosWorkflow.canListDevices;
 
   @override
-  Future<List<Device>> pollingGetDevices() => IOSDevice.getAttachedDevices();
+  Future<List<Device>> pollingGetDevices({ Duration timeout }) async {
+    if (!_platform.isMacOS) {
+      throw UnsupportedError(
+        'Control of iOS devices or simulators only supported on macOS.'
+      );
+    }
+
+    return await _xcdevice.getAvailableTetheredIOSDevices(timeout: timeout);
+  }
+
+  @override
+  Future<List<String>> getDiagnostics() async {
+    if (!_platform.isMacOS) {
+      return const <String>[
+        'Control of iOS devices or simulators only supported on macOS.'
+      ];
+    }
+
+    return await _xcdevice.getDiagnostics();
+  }
 }
 
 class IOSDevice extends Device {
-  IOSDevice(String id, { this.name, String sdkVersion }) : _sdkVersion = sdkVersion, super(id) {
-    _installerPath = _checkForCommand('ideviceinstaller');
-    _iproxyPath = _checkForCommand('iproxy');
-    _pusherPath = _checkForCommand(
-      'ios-deploy',
-      'To copy files to iOS devices, please install ios-deploy. To install, run:\n'
-      'brew update\n'
-      'brew install ios-deploy'
+  IOSDevice(String id, {
+    @required FileSystem fileSystem,
+    @required this.name,
+    @required this.cpuArchitecture,
+    @required String sdkVersion,
+    @required Platform platform,
+    @required Artifacts artifacts,
+    @required IOSDeploy iosDeploy,
+    @required IMobileDevice iMobileDevice,
+    @required Logger logger,
+  })
+    : _sdkVersion = sdkVersion,
+      _iosDeploy = iosDeploy,
+      _iMobileDevice = iMobileDevice,
+      _fileSystem = fileSystem,
+      _logger = logger,
+      _platform = platform,
+        super(
+          id,
+          category: Category.mobile,
+          platformType: PlatformType.ios,
+          ephemeral: true,
+      ) {
+    if (!platform.isMacOS) {
+      assert(false, 'Control of iOS devices or simulators only supported on Mac OS.');
+      return;
+    }
+    _iproxyPath = artifacts.getArtifactPath(
+      Artifact.iproxy,
+      platform: TargetPlatform.ios,
     );
   }
 
-  String _installerPath;
   String _iproxyPath;
-  String _pusherPath;
 
   final String _sdkVersion;
+  final IOSDeploy _iosDeploy;
+  final FileSystem _fileSystem;
+  final Logger _logger;
+  final Platform _platform;
+  final IMobileDevice _iMobileDevice;
+
+  /// May be 0 if version cannot be parsed.
+  int get majorSdkVersion {
+    final String majorVersionString = _sdkVersion?.split('.')?.first?.trim();
+    return majorVersionString != null ? int.tryParse(majorVersionString) ?? 0 : 0;
+  }
 
   @override
-  bool get supportsHotMode => true;
+  bool get supportsHotReload => true;
+
+  @override
+  bool get supportsHotRestart => true;
 
   @override
   final String name;
 
-  Map<ApplicationPackage, _IOSDeviceLogReader> _logReaders;
+  final DarwinArch cpuArchitecture;
 
-  _IOSDevicePortForwarder _portForwarder;
+  Map<IOSApp, DeviceLogReader> _logReaders;
+
+  DevicePortForwarder _portForwarder;
 
   @override
   Future<bool> get isLocalEmulator async => false;
 
   @override
+  Future<String> get emulatorId async => null;
+
+  @override
   bool get supportsStartPaused => false;
 
-  // Physical device line format to be matched:
-  // My iPhone (10.3.2) [75b90e947c5f429fa67f3e9169fda0d89f0492f1]
-  //
-  // Other formats in output (desktop, simulator) to be ignored:
-  // my-mac-pro [2C10513E-4dA5-405C-8EF5-C44353DB3ADD]
-  // iPhone 6s (9.3) [F6CEE7CF-81EB-4448-81B4-1755288C7C11] (Simulator)
-  static final RegExp _deviceRegex = new RegExp(r'^(.*) +\((.*)\) +\[(.*)\]$');
-
-  static Future<List<IOSDevice>> getAttachedDevices() async {
-    if (!xcode.isInstalled)
-      return <IOSDevice>[];
-
-    final List<IOSDevice> devices = <IOSDevice>[];
-    final Iterable<String> deviceLines = (await xcode.getAvailableDevices())
-        .split('\n')
-        .map((String line) => line.trim());
-    for (String line in deviceLines) {
-      final Match match = _deviceRegex.firstMatch(line);
-      if (match != null) {
-        final String deviceName = match.group(1);
-        final String sdkVersion = match.group(2);
-        final String deviceID = match.group(3);
-        devices.add(new IOSDevice(deviceID, name: deviceName, sdkVersion: sdkVersion));
-      }
-    }
-    return devices;
-  }
-
-  static String _checkForCommand(
-    String command, [
-    String macInstructions = _kIdeviceinstallerInstructions
-  ]) {
-    try {
-      command = runCheckedSync(<String>['which', command]).trim();
-    } catch (e) {
-      if (platform.isMacOS) {
-        printError('$command not found. $macInstructions');
-      } else {
-        printError('Cannot control iOS devices or simulators. $command is not available on your platform.');
-      }
-      return null;
-    }
-    return command;
-  }
-
   @override
-  Future<bool> isAppInstalled(ApplicationPackage app) async {
+  Future<bool> isAppInstalled(IOSApp app) async {
+    bool result;
     try {
-      final RunResult apps = await runCheckedAsync(<String>[_installerPath, '--list-apps']);
-      if (new RegExp(app.id, multiLine: true).hasMatch(apps.stdout)) {
-        return true;
-      }
-    } catch (e) {
+      result = await _iosDeploy.isAppInstalled(
+        bundleId: app.id,
+        deviceId: id,
+      );
+    } on ProcessException catch (e) {
+      _logger.printError(e.message);
       return false;
     }
-    return false;
+    return result;
   }
 
   @override
-  Future<bool> isLatestBuildInstalled(ApplicationPackage app) async => false;
+  Future<bool> isLatestBuildInstalled(IOSApp app) async => false;
 
   @override
-  Future<bool> installApp(ApplicationPackage app) async {
-    final IOSApp iosApp = app;
-    final Directory bundle = fs.directory(iosApp.deviceBundlePath);
+  Future<bool> installApp(IOSApp app) async {
+    final Directory bundle = _fileSystem.directory(app.deviceBundlePath);
     if (!bundle.existsSync()) {
-      printError('Could not find application bundle at ${bundle.path}; have you run "flutter build ios"?');
+      _logger.printError('Could not find application bundle at ${bundle.path}; have you run "flutter build ios"?');
       return false;
     }
 
+    int installationResult;
     try {
-      await runCheckedAsync(<String>[_installerPath, '-i', iosApp.deviceBundlePath]);
-      return true;
-    } catch (e) {
+      installationResult = await _iosDeploy.installApp(
+        deviceId: id,
+        bundlePath: bundle.path,
+        launchArguments: <String>[],
+      );
+    } on ProcessException catch (e) {
+      _logger.printError(e.message);
       return false;
     }
+    if (installationResult != 0) {
+      _logger.printError('Could not install ${bundle.path} on $id.');
+      _logger.printError('Try launching Xcode and selecting "Product > Run" to fix the problem:');
+      _logger.printError('  open ios/Runner.xcworkspace');
+      _logger.printError('');
+      return false;
+    }
+    return true;
   }
 
   @override
-  Future<bool> uninstallApp(ApplicationPackage app) async {
+  Future<bool> uninstallApp(IOSApp app) async {
+    int uninstallationResult;
     try {
-      await runCheckedAsync(<String>[_installerPath, '-U', app.id]);
-      return true;
-    } catch (e) {
+      uninstallationResult = await _iosDeploy.uninstallApp(
+        deviceId: id,
+        bundleId: app.id,
+      );
+    } on ProcessException catch (e) {
+      _logger.printError(e.message);
       return false;
     }
+    if (uninstallationResult != 0) {
+      _logger.printError('Could not uninstall ${app.id} on $id.');
+      return false;
+    }
+    return true;
   }
 
   @override
@@ -166,163 +217,153 @@ class IOSDevice extends Device {
 
   @override
   Future<LaunchResult> startApp(
-    ApplicationPackage app,
-    BuildMode mode, {
+    IOSApp package, {
     String mainPath,
     String route,
     DebuggingOptions debuggingOptions,
     Map<String, dynamic> platformArgs,
-    bool prebuiltApplication: false,
-    String kernelPath,
-    bool applicationNeedsRebuild: false,
+    bool prebuiltApplication = false,
+    bool ipv6 = false,
   }) async {
+    String packageId;
+
     if (!prebuiltApplication) {
       // TODO(chinmaygarde): Use mainPath, route.
-      printTrace('Building ${app.name} for $id');
+      _logger.printTrace('Building ${package.name} for $id');
 
       // Step 1: Build the precompiled/DBC application if necessary.
-      final XcodeBuildResult buildResult = await buildXcodeProject(app: app, mode: mode, target: mainPath, buildForDevice: true);
+      final XcodeBuildResult buildResult = await buildXcodeProject(
+          app: package as BuildableIOSApp,
+          buildInfo: debuggingOptions.buildInfo,
+          targetOverride: mainPath,
+          buildForDevice: true,
+          activeArch: cpuArchitecture,
+          deviceID: id,
+      );
       if (!buildResult.success) {
-        printError('Could not build the precompiled application for the device.');
-        await diagnoseXcodeBuildFailure(buildResult, app);
-        printError('');
-        return new LaunchResult.failed();
+        _logger.printError('Could not build the precompiled application for the device.');
+        await diagnoseXcodeBuildFailure(buildResult, globals.flutterUsage, _logger);
+        _logger.printError('');
+        return LaunchResult.failed();
       }
+      packageId = buildResult.xcodeBuildExecution?.buildSettings['PRODUCT_BUNDLE_IDENTIFIER'];
     } else {
-      if (!await installApp(app))
-        return new LaunchResult.failed();
+      if (!await installApp(package)) {
+        return LaunchResult.failed();
+      }
     }
+
+    packageId ??= package.id;
 
     // Step 2: Check that the application exists at the specified path.
-    final IOSApp iosApp = app;
-    final Directory bundle = fs.directory(iosApp.deviceBundlePath);
+    final Directory bundle = _fileSystem.directory(package.deviceBundlePath);
     if (!bundle.existsSync()) {
-      printError('Could not find the built application bundle at ${bundle.path}.');
-      return new LaunchResult.failed();
+      _logger.printError('Could not find the built application bundle at ${bundle.path}.');
+      return LaunchResult.failed();
     }
+
+    // Step 2.5: Generate a potential open port using the provided argument,
+    // or randomly with the package name as a seed. Intentionally choose
+    // ports within the ephemeral port range.
+    final int assumedObservatoryPort = debuggingOptions?.deviceVmServicePort
+      ?? math.Random(packageId.hashCode).nextInt(16383) + 49152;
 
     // Step 3: Attempt to install the application on the device.
-    final List<String> launchArguments = <String>['--enable-dart-profiling'];
-
-    if (debuggingOptions.startPaused)
-      launchArguments.add('--start-paused');
-
-    if (debuggingOptions.useTestFonts)
-      launchArguments.add('--use-test-fonts');
-
-    if (debuggingOptions.debuggingEnabled) {
-      launchArguments.add('--enable-checked-mode');
-
-      // Note: We do NOT need to set the observatory port since this is going to
-      // be setup on the device. Let it pick a port automatically. We will check
-      // the port picked and scrape that later.
-    }
-
-    if (debuggingOptions.enableSoftwareRendering)
-      launchArguments.add('--enable-software-rendering');
-
-    if (platformArgs['trace-startup'] ?? false)
-      launchArguments.add('--trace-startup');
-
-    final List<String> launchCommand = <String>[
-      '/usr/bin/env',
-      'ios-deploy',
-      '--id',
-      id,
-      '--bundle',
-      bundle.path,
-      '--no-wifi',
-      '--justlaunch',
+    final List<String> launchArguments = <String>[
+      '--enable-dart-profiling',
+      // These arguments are required to support the fallback connection strategy
+      // described in fallback_discovery.dart.
+      '--enable-service-port-fallback',
+      '--disable-service-auth-codes',
+      '--observatory-port=$assumedObservatoryPort',
+      if (debuggingOptions.startPaused) '--start-paused',
+      if (debuggingOptions.dartFlags.isNotEmpty) '--dart-flags="${debuggingOptions.dartFlags}"',
+      if (debuggingOptions.useTestFonts) '--use-test-fonts',
+      // "--enable-checked-mode" and "--verify-entry-points" should always be
+      // passed when we launch debug build via "ios-deploy". However, we don't
+      // pass them if a certain environment variable is set to enable the
+      // "system_debug_ios" integration test in the CI, which simulates a
+      // home-screen launch.
+      if (debuggingOptions.debuggingEnabled &&
+          _platform.environment['FLUTTER_TOOLS_DEBUG_WITHOUT_CHECKED_MODE'] != 'true') ...<String>[
+        '--enable-checked-mode',
+        '--verify-entry-points',
+      ],
+      if (debuggingOptions.enableSoftwareRendering) '--enable-software-rendering',
+      if (debuggingOptions.skiaDeterministicRendering) '--skia-deterministic-rendering',
+      if (debuggingOptions.traceSkia) '--trace-skia',
+      if (debuggingOptions.traceWhitelist != null) '--trace-whitelist="${debuggingOptions.traceWhitelist}"',
+      if (debuggingOptions.endlessTraceBuffer) '--endless-trace-buffer',
+      if (debuggingOptions.dumpSkpOnShaderCompilation) '--dump-skp-on-shader-compilation',
+      if (debuggingOptions.verboseSystemLogs) '--verbose-logging',
+      if (debuggingOptions.cacheSkSL) '--cache-sksl',
+      if (platformArgs['trace-startup'] as bool ?? false) '--trace-startup',
     ];
 
-    if (launchArguments.isNotEmpty) {
-      launchCommand.add('--args');
-      launchCommand.add('${launchArguments.join(" ")}');
-    }
-
-    int installationResult = -1;
-    Uri localObservatoryUri;
-    Uri localDiagnosticUri;
-
-    if (!debuggingOptions.debuggingEnabled) {
-      // If debugging is not enabled, just launch the application and continue.
-      printTrace('Debugging is not enabled');
-      installationResult = await runCommandAndStreamOutput(launchCommand, trace: true);
-    } else {
-      // Debugging is enabled, look for the observatory and diagnostic server
-      // ports post launch.
-      printTrace('Debugging is enabled, connecting to observatory and the diagnostic server');
-
-      // TODO(danrubel): The Android device class does something similar to this code below.
-      // The various Device subclasses should be refactored and common code moved into the superclass.
-      final ProtocolDiscovery observatoryDiscovery = new ProtocolDiscovery.observatory(
-        getLogReader(app: app), portForwarder: portForwarder, hostPort: debuggingOptions.observatoryPort);
-      final ProtocolDiscovery diagnosticDiscovery = new ProtocolDiscovery.diagnosticService(
-        getLogReader(app: app), portForwarder: portForwarder, hostPort: debuggingOptions.diagnosticPort);
-
-      final Future<Uri> forwardObservatoryUri = observatoryDiscovery.uri;
-      Future<Uri> forwardDiagnosticUri;
-      if (debuggingOptions.buildMode == BuildMode.debug) {
-        forwardDiagnosticUri = diagnosticDiscovery.uri;
-      } else {
-        forwardDiagnosticUri = new Future<Uri>.value(null);
+    final Status installStatus = _logger.startProgress(
+        'Installing and launching...',
+        timeout: timeoutConfiguration.slowOperation);
+    try {
+      ProtocolDiscovery observatoryDiscovery;
+      if (debuggingOptions.debuggingEnabled) {
+        _logger.printTrace('Debugging is enabled, connecting to observatory');
+        observatoryDiscovery = ProtocolDiscovery.observatory(
+          getLogReader(app: package),
+          portForwarder: portForwarder,
+          hostPort: debuggingOptions.hostVmServicePort,
+          devicePort: debuggingOptions.deviceVmServicePort,
+          ipv6: ipv6,
+        );
+      }
+      final int installationResult = await _iosDeploy.runApp(
+        deviceId: id,
+        bundlePath: bundle.path,
+        launchArguments: launchArguments,
+      );
+      if (installationResult != 0) {
+        _logger.printError('Could not run ${bundle.path} on $id.');
+        _logger.printError('Try launching Xcode and selecting "Product > Run" to fix the problem:');
+        _logger.printError('  open ios/Runner.xcworkspace');
+        _logger.printError('');
+        return LaunchResult.failed();
       }
 
-      final Future<int> launch = runCommandAndStreamOutput(launchCommand, trace: true);
+      if (!debuggingOptions.debuggingEnabled) {
+        return LaunchResult.succeeded();
+      }
 
-      final List<Uri> uris = await launch.then<List<Uri>>((int result) async {
-        installationResult = result;
-
-        if (result != 0) {
-          printTrace('Failed to launch the application on device.');
-          return <Uri>[null, null];
-        }
-
-        printTrace('Application launched on the device. Attempting to forward ports.');
-        return await Future.wait(<Future<Uri>>[forwardObservatoryUri, forwardDiagnosticUri]);
-      }).whenComplete(() {
-        observatoryDiscovery.cancel();
-        diagnosticDiscovery.cancel();
-      });
-
-      localObservatoryUri = uris[0];
-      localDiagnosticUri = uris[1];
+      _logger.printTrace('Application launched on the device. Waiting for observatory port.');
+      final FallbackDiscovery fallbackDiscovery = FallbackDiscovery(
+        logger: _logger,
+        mDnsObservatoryDiscovery: MDnsObservatoryDiscovery.instance,
+        portForwarder: portForwarder,
+        protocolDiscovery: observatoryDiscovery,
+        flutterUsage: globals.flutterUsage,
+      );
+      final Uri localUri = await fallbackDiscovery.discover(
+        assumedDevicePort: assumedObservatoryPort,
+        deivce: this,
+        usesIpv6: ipv6,
+        hostVmservicePort: debuggingOptions.hostVmServicePort,
+        packageId: packageId,
+        packageName: FlutterProject.current().manifest.appName,
+      );
+      if (localUri == null) {
+        return LaunchResult.failed();
+      }
+      return LaunchResult.succeeded(observatoryUri: localUri);
+    } on ProcessException catch (e) {
+      _logger.printError(e.message);
+      return LaunchResult.failed();
+    } finally {
+      installStatus.stop();
     }
-
-    if (installationResult != 0) {
-      printError('Could not install ${bundle.path} on $id.');
-      printError('Try launching Xcode and selecting "Product > Run" to fix the problem:');
-      printError('  open ios/Runner.xcworkspace');
-      printError('');
-      return new LaunchResult.failed();
-    }
-
-    return new LaunchResult.succeeded(observatoryUri: localObservatoryUri, diagnosticUri: localDiagnosticUri);
   }
 
   @override
-  Future<bool> stopApp(ApplicationPackage app) async {
+  Future<bool> stopApp(IOSApp app) async {
     // Currently we don't have a way to stop an app running on iOS.
     return false;
-  }
-
-  Future<bool> pushFile(ApplicationPackage app, String localFile, String targetFile) async {
-    if (platform.isMacOS) {
-      runSync(<String>[
-        _pusherPath,
-        '-t',
-        '1',
-        '--bundle_id',
-        app.id,
-        '--upload',
-        localFile,
-        '--to',
-        targetFile
-      ]);
-      return true;
-    } else {
-      return false;
-    }
   }
 
   @override
@@ -332,131 +373,401 @@ class IOSDevice extends Device {
   Future<String> get sdkNameAndVersion async => 'iOS $_sdkVersion';
 
   @override
-  DeviceLogReader getLogReader({ApplicationPackage app}) {
-    _logReaders ??= <ApplicationPackage, _IOSDeviceLogReader>{};
-    return _logReaders.putIfAbsent(app, () => new _IOSDeviceLogReader(this, app));
+  DeviceLogReader getLogReader({
+    IOSApp app,
+    bool includePastLogs = false,
+  }) {
+    assert(!includePastLogs, 'Past log reading not supported on iOS devices.');
+    _logReaders ??= <IOSApp, DeviceLogReader>{};
+    return _logReaders.putIfAbsent(app, () => IOSDeviceLogReader.create(
+      device: this,
+      app: app,
+      iMobileDevice: _iMobileDevice,
+    ));
+  }
+
+  @visibleForTesting
+  void setLogReader(IOSApp app, DeviceLogReader logReader) {
+    _logReaders ??= <IOSApp, DeviceLogReader>{};
+    _logReaders[app] = logReader;
   }
 
   @override
-  DevicePortForwarder get portForwarder => _portForwarder ??= new _IOSDevicePortForwarder(this);
+  DevicePortForwarder get portForwarder => _portForwarder ??= IOSDevicePortForwarder(
+    processManager: globals.processManager,
+    logger: _logger,
+    dyLdLibEntry: globals.cache.dyLdLibEntry,
+    id: id,
+    iproxyPath: _iproxyPath,
+  );
 
-  @override
-  void clearLogs() {
+  @visibleForTesting
+  set portForwarder(DevicePortForwarder forwarder) {
+    _portForwarder = forwarder;
   }
 
   @override
-  bool get supportsScreenshot => iMobileDevice.isInstalled;
+  void clearLogs() { }
 
   @override
-  Future<Null> takeScreenshot(File outputFile) => iMobileDevice.takeScreenshot(outputFile);
+  bool get supportsScreenshot => _iMobileDevice.isInstalled;
+
+  @override
+  Future<void> takeScreenshot(File outputFile) async {
+    await _iMobileDevice.takeScreenshot(outputFile);
+  }
+
+  @override
+  bool isSupportedForProject(FlutterProject flutterProject) {
+    return flutterProject.ios.existsSync();
+  }
+
+  @override
+  Future<void> dispose() async {
+    _logReaders?.forEach((IOSApp application, DeviceLogReader logReader) {
+      logReader.dispose();
+    });
+    await _portForwarder?.dispose();
+  }
 }
 
-class _IOSDeviceLogReader extends DeviceLogReader {
-  RegExp _lineRegex;
+/// Decodes a vis-encoded syslog string to a UTF-8 representation.
+///
+/// Apple's syslog logs are encoded in 7-bit form. Input bytes are encoded as follows:
+/// 1. 0x00 to 0x19: non-printing range. Some ignored, some encoded as <...>.
+/// 2. 0x20 to 0x7f: as-is, with the exception of 0x5c (backslash).
+/// 3. 0x5c (backslash): octal representation \134.
+/// 4. 0x80 to 0x9f: \M^x (using control-character notation for range 0x00 to 0x40).
+/// 5. 0xa0: octal representation \240.
+/// 6. 0xa1 to 0xf7: \M-x (where x is the input byte stripped of its high-order bit).
+/// 7. 0xf8 to 0xff: unused in 4-byte UTF-8.
+///
+/// See: [vis(3) manpage](https://www.freebsd.org/cgi/man.cgi?query=vis&sektion=3)
+String decodeSyslog(String line) {
+  // UTF-8 values for \, M, -, ^.
+  const int kBackslash = 0x5c;
+  const int kM = 0x4d;
+  const int kDash = 0x2d;
+  const int kCaret = 0x5e;
 
-  _IOSDeviceLogReader(this.device, ApplicationPackage app) {
-    _linesController = new StreamController<String>.broadcast(
-      onListen: _start,
-      onCancel: _stop
+  // Mask for the UTF-8 digit range.
+  const int kNum = 0x30;
+
+  // Returns true when `byte` is within the UTF-8 7-bit digit range (0x30 to 0x39).
+  bool isDigit(int byte) => (byte & 0xf0) == kNum;
+
+  // Converts a three-digit ASCII (UTF-8) representation of an octal number `xyz` to an integer.
+  int decodeOctal(int x, int y, int z) => (x & 0x3) << 6 | (y & 0x7) << 3 | z & 0x7;
+
+  try {
+    final List<int> bytes = utf8.encode(line);
+    final List<int> out = <int>[];
+    for (int i = 0; i < bytes.length;) {
+      if (bytes[i] != kBackslash || i > bytes.length - 4) {
+        // Unmapped byte: copy as-is.
+        out.add(bytes[i++]);
+      } else {
+        // Mapped byte: decode next 4 bytes.
+        if (bytes[i + 1] == kM && bytes[i + 2] == kCaret) {
+          // \M^x form: bytes in range 0x80 to 0x9f.
+          out.add((bytes[i + 3] & 0x7f) + 0x40);
+        } else if (bytes[i + 1] == kM && bytes[i + 2] == kDash) {
+          // \M-x form: bytes in range 0xa0 to 0xf7.
+          out.add(bytes[i + 3] | 0x80);
+        } else if (bytes.getRange(i + 1, i + 3).every(isDigit)) {
+          // \ddd form: octal representation (only used for \134 and \240).
+          out.add(decodeOctal(bytes[i + 1], bytes[i + 2], bytes[i + 3]));
+        } else {
+          // Unknown form: copy as-is.
+          out.addAll(bytes.getRange(0, 4));
+        }
+        i += 4;
+      }
+    }
+    return utf8.decode(out);
+  } on Exception {
+    // Unable to decode line: return as-is.
+    return line;
+  }
+}
+
+@visibleForTesting
+class IOSDeviceLogReader extends DeviceLogReader {
+  IOSDeviceLogReader._(
+    this._iMobileDevice,
+    this._majorSdkVersion,
+    this._deviceId,
+    this.name,
+    String appName,
+  ) {
+    _linesController = StreamController<String>.broadcast(
+      onListen: _listenToSysLog,
+      onCancel: dispose,
     );
 
     // Match for lines for the runner in syslog.
     //
     // iOS 9 format:  Runner[297] <Notice>:
-    // iOS 10 format: Runner(libsystem_asl.dylib)[297] <Notice>:
-    final String appName = app == null ? '' : app.name.replaceAll('.app', '');
-    _lineRegex = new RegExp(appName + r'(\(.*\))?\[[\d]+\] <[A-Za-z]+>: ');
+    // iOS 10 format: Runner(Flutter)[297] <Notice>:
+    _runnerLineRegex = RegExp(appName + r'(\(Flutter\))?\[[\d]+\] <[A-Za-z]+>: ');
+    // Similar to above, but allows ~arbitrary components instead of "Runner"
+    // and "Flutter". The regex tries to strike a balance between not producing
+    // false positives and not producing false negatives.
+    _anyLineRegex = RegExp(r'\w+(\([^)]*\))?\[\d+\] <[A-Za-z]+>: ');
+    _loggingSubscriptions = <StreamSubscription<void>>[];
   }
 
-  final IOSDevice device;
+  /// Create a new [IOSDeviceLogReader].
+  factory IOSDeviceLogReader.create({
+    @required IOSDevice device,
+    @required IOSApp app,
+    @required IMobileDevice iMobileDevice,
+  }) {
+    final String appName = app == null ? '' : app.name.replaceAll('.app', '');
+    return IOSDeviceLogReader._(
+      iMobileDevice,
+      device.majorSdkVersion,
+      device.id,
+      device.name,
+      appName,
+    );
+  }
+
+  /// Create an [IOSDeviceLogReader] for testing.
+  factory IOSDeviceLogReader.test({
+    @required IMobileDevice iMobileDevice,
+    bool useSyslog = true,
+  }) {
+    return IOSDeviceLogReader._(
+      iMobileDevice, useSyslog ? 12 : 13, '1234', 'test', 'Runner');
+  }
+
+  @override
+  final String name;
+  final int _majorSdkVersion;
+  final String _deviceId;
+  final IMobileDevice _iMobileDevice;
+
+  // Matches a syslog line from the runner.
+  RegExp _runnerLineRegex;
+  // Matches a syslog line from any app.
+  RegExp _anyLineRegex;
 
   StreamController<String> _linesController;
-  Process _process;
+  List<StreamSubscription<void>> _loggingSubscriptions;
 
   @override
   Stream<String> get logLines => _linesController.stream;
 
   @override
-  String get name => device.name;
+  vm_service.VmService get connectedVMService => _connectedVMService;
+  vm_service.VmService _connectedVMService;
 
-  void _start() {
-    iMobileDevice.startLogger().then<Null>((Process process) {
-      _process = process;
-      _process.stdout.transform(UTF8.decoder).transform(const LineSplitter()).listen(_onLine);
-      _process.stderr.transform(UTF8.decoder).transform(const LineSplitter()).listen(_onLine);
-      _process.exitCode.whenComplete(() {
-        if (_linesController.hasListener)
+  @override
+  set connectedVMService(vm_service.VmService connectedVmService) {
+    _listenToUnifiedLoggingEvents(connectedVmService);
+    _connectedVMService = connectedVmService;
+  }
+
+  static const int _minimumUniversalLoggingSdkVersion = 13;
+
+  Future<void> _listenToUnifiedLoggingEvents(vm_service.VmService connectedVmService) async {
+    if (_majorSdkVersion < _minimumUniversalLoggingSdkVersion) {
+      return;
+    }
+    try {
+      await connectedVmService.streamListen('Stdout');
+    } on vm_service.RPCError {
+      // Do nothing, since the tool is already subscribed.
+    }
+    _loggingSubscriptions.add(connectedVmService.onStdoutEvent.listen((vm_service.Event event) {
+      final String message = utf8.decode(base64.decode(event.bytes));
+      if (message.isNotEmpty) {
+        _linesController.add(message);
+      }
+    }));
+  }
+
+  void _listenToSysLog() {
+    // syslog is not written on iOS 13+.
+    if (_majorSdkVersion >= _minimumUniversalLoggingSdkVersion) {
+      return;
+    }
+    _iMobileDevice.startLogger(_deviceId).then<void>((Process process) {
+      process.stdout.transform<String>(utf8.decoder).transform<String>(const LineSplitter()).listen(_newSyslogLineHandler());
+      process.stderr.transform<String>(utf8.decoder).transform<String>(const LineSplitter()).listen(_newSyslogLineHandler());
+      process.exitCode.whenComplete(() {
+        if (_linesController.hasListener) {
           _linesController.close();
+        }
       });
+      assert(_idevicesyslogProcess == null);
+      _idevicesyslogProcess = process;
     });
   }
 
-  void _onLine(String line) {
-    final Match match = _lineRegex.firstMatch(line);
+  @visibleForTesting
+  set idevicesyslogProcess(Process process) => _idevicesyslogProcess = process;
+  Process _idevicesyslogProcess;
 
-    if (match != null) {
-      // Only display the log line after the initial device and executable information.
-      _linesController.add(line.substring(match.end));
-    }
+  // Returns a stateful line handler to properly capture multiline output.
+  //
+  // For multiline log messages, any line after the first is logged without
+  // any specific prefix. To properly capture those, we enter "printing" mode
+  // after matching a log line from the runner. When in printing mode, we print
+  // all lines until we find the start of another log message (from any app).
+  void Function(String line) _newSyslogLineHandler() {
+    bool printing = false;
+
+    return (String line) {
+      if (printing) {
+        if (!_anyLineRegex.hasMatch(line)) {
+          _linesController.add(decodeSyslog(line));
+          return;
+        }
+
+        printing = false;
+      }
+
+      final Match match = _runnerLineRegex.firstMatch(line);
+
+      if (match != null) {
+        final String logLine = line.substring(match.end);
+        // Only display the log line after the initial device and executable information.
+        _linesController.add(decodeSyslog(logLine));
+
+        printing = true;
+      }
+    };
   }
 
-  void _stop() {
-    _process?.kill();
+  @override
+  void dispose() {
+    for (final StreamSubscription<void> loggingSubscription in _loggingSubscriptions) {
+      loggingSubscription.cancel();
+    }
+    _idevicesyslogProcess?.kill();
   }
 }
 
-class _IOSDevicePortForwarder extends DevicePortForwarder {
-  _IOSDevicePortForwarder(this.device) : _forwardedPorts = <ForwardedPort>[];
+/// A [DevicePortForwarder] specialized for iOS usage with iproxy.
+class IOSDevicePortForwarder extends DevicePortForwarder {
 
-  final IOSDevice device;
+  /// Create a new [IOSDevicePortForwarder].
+  IOSDevicePortForwarder({
+    @required ProcessManager processManager,
+    @required Logger logger,
+    @required MapEntry<String, String> dyLdLibEntry,
+    @required String id,
+    @required String iproxyPath,
+  }) : _logger = logger,
+       _dyLdLibEntry = dyLdLibEntry,
+       _id = id,
+       _iproxyPath = iproxyPath,
+       _processUtils = ProcessUtils(processManager: processManager, logger: logger);
 
-  final List<ForwardedPort> _forwardedPorts;
+  /// Create a [IOSDevicePortForwarder] for testing.
+  ///
+  /// This specifies the path to iproxy as 'iproxy` and the dyLdLibEntry as
+  /// 'DYLD_LIBRARY_PATH: /path/to/libs'.
+  ///
+  /// The device id may be provided, but otherwise defaultts to '1234'.
+  factory IOSDevicePortForwarder.test({
+    @required ProcessManager processManager,
+    @required Logger logger,
+    String id,
+  }) {
+    return IOSDevicePortForwarder(
+      processManager: processManager,
+      logger: logger,
+      iproxyPath: 'iproxy',
+      id: id ?? '1234',
+      dyLdLibEntry: const MapEntry<String, String>(
+        'DYLD_LIBRARY_PATH', '/path/to/libs',
+      ),
+    );
+  }
+
+  final ProcessUtils _processUtils;
+  final Logger _logger;
+  final MapEntry<String, String> _dyLdLibEntry;
+  final String _id;
+  final String _iproxyPath;
 
   @override
-  List<ForwardedPort> get forwardedPorts => _forwardedPorts;
+  List<ForwardedPort> forwardedPorts = <ForwardedPort>[];
+
+  @visibleForTesting
+  void addForwardedPorts(List<ForwardedPort> ports) {
+    ports.forEach(forwardedPorts.add);
+  }
+
+  static const Duration _kiProxyPortForwardTimeout = Duration(seconds: 1);
 
   @override
-  Future<int> forward(int devicePort, {int hostPort: null}) async {
-    if ((hostPort == null) || (hostPort == 0)) {
-      // Auto select host port.
-      hostPort = await portScanner.findAvailablePort();
+  Future<int> forward(int devicePort, { int hostPort }) async {
+    final bool autoselect = hostPort == null || hostPort == 0;
+    if (autoselect) {
+      hostPort = 1024;
     }
 
-    // Usage: iproxy LOCAL_TCP_PORT DEVICE_TCP_PORT UDID
-    final Process process = await runCommand(<String>[
-      device._iproxyPath,
-      hostPort.toString(),
-      devicePort.toString(),
-      device.id,
-    ]);
+    Process process;
 
-    final ForwardedPort forwardedPort = new ForwardedPort.withContext(hostPort,
-        devicePort, process);
+    bool connected = false;
+    while (!connected) {
+      _logger.printTrace('Attempting to forward device port $devicePort to host port $hostPort');
+      // Usage: iproxy LOCAL_TCP_PORT DEVICE_TCP_PORT UDID
+      process = await _processUtils.start(
+        <String>[
+          _iproxyPath,
+          hostPort.toString(),
+          devicePort.toString(),
+          _id,
+        ],
+        environment: Map<String, String>.fromEntries(
+          <MapEntry<String, String>>[_dyLdLibEntry],
+        ),
+      );
+      // TODO(ianh): This is a flakey race condition, https://github.com/libimobiledevice/libimobiledevice/issues/674
+      connected = !await process.stdout.isEmpty.timeout(_kiProxyPortForwardTimeout, onTimeout: () => false);
+      if (!connected) {
+        process.kill();
+        if (autoselect) {
+          hostPort += 1;
+          if (hostPort > 65535) {
+            throw Exception('Could not find open port on host.');
+          }
+        } else {
+          throw Exception('Port $hostPort is not available.');
+        }
+      }
+    }
+    assert(connected);
+    assert(process != null);
 
-    printTrace('Forwarded port $forwardedPort');
-
-    _forwardedPorts.add(forwardedPort);
-
+    final ForwardedPort forwardedPort = ForwardedPort.withContext(
+      hostPort, devicePort, process,
+    );
+    _logger.printTrace('Forwarded port $forwardedPort');
+    forwardedPorts.add(forwardedPort);
     return hostPort;
   }
 
   @override
-  Future<Null> unforward(ForwardedPort forwardedPort) async {
-    if (!_forwardedPorts.remove(forwardedPort)) {
+  Future<void> unforward(ForwardedPort forwardedPort) async {
+    if (!forwardedPorts.remove(forwardedPort)) {
       // Not in list. Nothing to remove.
-      return null;
+      return;
     }
 
-    printTrace('Unforwarding port $forwardedPort');
+    _logger.printTrace('Unforwarding port $forwardedPort');
+    forwardedPort.dispose();
+  }
 
-    final Process process = forwardedPort.context;
-
-    if (process != null) {
-      processManager.killPid(process.pid);
-    } else {
-      printError('Forwarded port did not have a valid process');
+  @override
+  Future<void> dispose() async {
+    for (final ForwardedPort forwardedPort in forwardedPorts) {
+      forwardedPort.dispose();
     }
-
-    return null;
   }
 }

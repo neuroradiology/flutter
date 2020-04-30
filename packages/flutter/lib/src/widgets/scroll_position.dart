@@ -1,4 +1,4 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -6,6 +6,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter/physics.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 
@@ -20,6 +21,32 @@ import 'scroll_notification.dart';
 import 'scroll_physics.dart';
 
 export 'scroll_activity.dart' show ScrollHoldController;
+
+/// The policy to use when applying the `alignment` parameter of
+/// [ScrollPosition.ensureVisible].
+enum ScrollPositionAlignmentPolicy {
+  /// Use the `alignment` property of [ScrollPosition.ensureVisible] to decide
+  /// where to align the visible object.
+  explicit,
+
+  /// Find the bottom edge of the scroll container, and scroll the container, if
+  /// necessary, to show the bottom of the object.
+  ///
+  /// For example, find the bottom edge of the scroll container. If the bottom
+  /// edge of the item is below the bottom edge of the scroll container, scroll
+  /// the item so that the bottom of the item is just visible. If the entire
+  /// item is already visible, then do nothing.
+  keepVisibleAtEnd,
+
+  /// Find the top edge of the scroll container, and scroll the container if
+  /// necessary to show the top of the object.
+  ///
+  /// For example, find the top edge of the scroll container. If the top edge of
+  /// the item is above the top edge of the scroll container, scroll the item so
+  /// that the top of the item is just visible. If the entire item is already
+  /// visible, then do nothing.
+  keepVisibleAtStart,
+}
 
 /// Determines which portion of the content is visible in a scroll view.
 ///
@@ -58,6 +85,8 @@ export 'scroll_activity.dart' show ScrollHoldController;
 ///    other scrollable widgets to control a [ScrollPosition].
 ///  * [ScrollPositionWithSingleContext], which is the most commonly used
 ///    concrete subclass of [ScrollPosition].
+///  * [ScrollNotification] and [NotificationListener], which can be used to watch
+///    the scroll position without using a [ScrollController].
 abstract class ScrollPosition extends ViewportOffset with ScrollMetrics {
   /// Creates an object that determines which portion of the content is visible
   /// in a scroll view.
@@ -66,7 +95,7 @@ abstract class ScrollPosition extends ViewportOffset with ScrollMetrics {
   ScrollPosition({
     @required this.physics,
     @required this.context,
-    this.keepScrollOffset: true,
+    this.keepScrollOffset = true,
     ScrollPosition oldPosition,
     this.debugLabel,
   }) : assert(physics != null),
@@ -90,7 +119,7 @@ abstract class ScrollPosition extends ViewportOffset with ScrollMetrics {
   /// Typically implemented by [ScrollableState].
   final ScrollContext context;
 
-  /// Save the current scroll [offset] with [PageStorage] and restore it if
+  /// Save the current scroll offset with [PageStorage] and restore it if
   /// this scroll position's scrollable is recreated.
   ///
   /// See also:
@@ -99,8 +128,10 @@ abstract class ScrollPosition extends ViewportOffset with ScrollMetrics {
   ///    create scroll positions and initialize this property.
   final bool keepScrollOffset;
 
-  /// A label that is used in the [toString] output. Intended to aid with
-  /// identifying animation controller instances in debug output.
+  /// A label that is used in the [toString] output.
+  ///
+  /// Intended to aid with identifying animation controller instances in debug
+  /// output.
   final String debugLabel;
 
   @override
@@ -120,10 +151,9 @@ abstract class ScrollPosition extends ViewportOffset with ScrollMetrics {
   double _viewportDimension;
 
   /// Whether [viewportDimension], [minScrollExtent], [maxScrollExtent],
-  /// [outOfRange], and [atEdge] are available yet.
+  /// [outOfRange], and [atEdge] are available.
   ///
-  /// Set to true just before the first time that [applyNewDimensions] is
-  /// called.
+  /// Set to true just before the first time [applyNewDimensions] is called.
   bool get haveDimensions => _haveDimensions;
   bool _haveDimensions = false;
 
@@ -199,7 +229,7 @@ abstract class ScrollPosition extends ViewportOffset with ScrollMetrics {
       assert(() {
         final double delta = newPixels - pixels;
         if (overscroll.abs() > delta.abs()) {
-          throw new FlutterError(
+          throw FlutterError(
             '$runtimeType.applyBoundaryConditions returned invalid overscroll value.\n'
             'setPixels() was called to change the scroll offset from $pixels to $newPixels.\n'
             'That is a delta of $delta units.\n'
@@ -207,7 +237,7 @@ abstract class ScrollPosition extends ViewportOffset with ScrollMetrics {
           );
         }
         return true;
-      });
+      }());
       final double oldPixels = _pixels;
       _pixels = newPixels - overscroll;
       if (_pixels != oldPixels) {
@@ -246,13 +276,43 @@ abstract class ScrollPosition extends ViewportOffset with ScrollMetrics {
   /// To force the [pixels] to a particular value without honoring the normal
   /// conventions for changing the scroll offset, consider [forcePixels]. (But
   /// see the discussion there for why that might still be a bad idea.)
+  ///
+  /// See also:
+  ///
+  ///  * [correctBy], which is a method of [ViewportOffset] used
+  ///    by viewport render objects to correct the offset during layout
+  ///    without notifying its listeners.
+  ///  * [jumpTo], for making changes to position while not in the
+  ///    middle of layout and applying the new position immediately.
+  ///  * [animateTo], which is like [jumpTo] but animating to the
+  ///    destination offset.
   void correctPixels(double value) {
     _pixels = value;
   }
 
+  /// Apply a layout-time correction to the scroll offset.
+  ///
+  /// This method should change the [pixels] value by `correction`, but without
+  /// calling [notifyListeners]. It is called during layout by the
+  /// [RenderViewport], before [applyContentDimensions]. After this method is
+  /// called, the layout will be recomputed and that may result in this method
+  /// being called again, though this should be very rare.
+  ///
+  /// See also:
+  ///
+  ///  * [jumpTo], for also changing the scroll position when not in layout.
+  ///    [jumpTo] applies the change immediately and notifies its listeners.
+  ///  * [correctPixels], which is used by the [ScrollPosition] itself to
+  ///    set the offset initially during construction or after
+  ///    [applyViewportDimension] or [applyContentDimensions] is called.
   @override
   void correctBy(double correction) {
+    assert(
+      _pixels != null,
+      'An initial pixels value must exist by caling correctPixels on the ScrollPosition',
+    );
     _pixels += correction;
+    _didChangeViewportDimensionOrReceiveCorrection = true;
   }
 
   /// Change the value of [pixels] to the new value, and notify any customers,
@@ -319,7 +379,7 @@ abstract class ScrollPosition extends ViewportOffset with ScrollMetrics {
   @protected
   void restoreScrollOffset() {
     if (pixels == null) {
-      final double value = PageStorage.of(context.storageContext)?.readState(context.storageContext);
+      final double value = PageStorage.of(context.storageContext)?.readState(context.storageContext) as double;
       if (value != null)
         correctPixels(value);
     }
@@ -331,13 +391,16 @@ abstract class ScrollPosition extends ViewportOffset with ScrollMetrics {
   /// amount of value that cannot be applied to [pixels] as a result of the
   /// boundary conditions. If the [physics] allow out-of-bounds scrolling, this
   /// method always returns 0.0.
+  ///
+  /// The default implementation defers to the [physics] object's
+  /// [ScrollPhysics.applyBoundaryConditions].
   @protected
   double applyBoundaryConditions(double value) {
     final double result = physics.applyBoundaryConditions(this, value);
     assert(() {
       final double delta = value - pixels;
       if (result.abs() > delta.abs()) {
-        throw new FlutterError(
+        throw FlutterError(
           '${physics.runtimeType}.applyBoundaryConditions returned invalid overscroll value.\n'
           'The method was called to consider a change from $pixels to $value, which is a '
           'delta of ${delta.toStringAsFixed(1)} units. However, it returned an overscroll of '
@@ -349,17 +412,17 @@ abstract class ScrollPosition extends ViewportOffset with ScrollMetrics {
         );
       }
       return true;
-    });
+    }());
     return result;
   }
 
-  bool _didChangeViewportDimension = true;
+  bool _didChangeViewportDimensionOrReceiveCorrection = true;
 
   @override
   bool applyViewportDimension(double viewportDimension) {
     if (_viewportDimension != viewportDimension) {
       _viewportDimension = viewportDimension;
-      _didChangeViewportDimension = true;
+      _didChangeViewportDimensionOrReceiveCorrection = true;
       // If this is called, you can rely on applyContentDimensions being called
       // soon afterwards in the same layout phase. So we put all the logic that
       // relies on both values being computed into applyContentDimensions.
@@ -367,16 +430,70 @@ abstract class ScrollPosition extends ViewportOffset with ScrollMetrics {
     return true;
   }
 
+  Set<SemanticsAction> _semanticActions;
+
+  /// Called whenever the scroll position or the dimensions of the scroll view
+  /// change to schedule an update of the available semantics actions. The
+  /// actual update will be performed in the next frame. If non is pending
+  /// a frame will be scheduled.
+  ///
+  /// For example: If the scroll view has been scrolled all the way to the top,
+  /// the action to scroll further up needs to be removed as the scroll view
+  /// cannot be scrolled in that direction anymore.
+  ///
+  /// This method is potentially called twice per frame (if scroll position and
+  /// scroll view dimensions both change) and therefore shouldn't do anything
+  /// expensive.
+  void _updateSemanticActions() {
+    SemanticsAction forward;
+    SemanticsAction backward;
+    switch (axisDirection) {
+      case AxisDirection.up:
+        forward = SemanticsAction.scrollDown;
+        backward = SemanticsAction.scrollUp;
+        break;
+      case AxisDirection.right:
+        forward = SemanticsAction.scrollLeft;
+        backward = SemanticsAction.scrollRight;
+        break;
+      case AxisDirection.down:
+        forward = SemanticsAction.scrollUp;
+        backward = SemanticsAction.scrollDown;
+        break;
+      case AxisDirection.left:
+        forward = SemanticsAction.scrollRight;
+        backward = SemanticsAction.scrollLeft;
+        break;
+    }
+
+    final Set<SemanticsAction> actions = <SemanticsAction>{};
+    if (pixels > minScrollExtent)
+      actions.add(backward);
+    if (pixels < maxScrollExtent)
+      actions.add(forward);
+
+    if (setEquals<SemanticsAction>(actions, _semanticActions))
+      return;
+
+    _semanticActions = actions;
+    context.setSemanticsActions(_semanticActions);
+  }
+
   @override
   bool applyContentDimensions(double minScrollExtent, double maxScrollExtent) {
-    if (_minScrollExtent != minScrollExtent ||
-        _maxScrollExtent != maxScrollExtent ||
-        _didChangeViewportDimension) {
+    assert(minScrollExtent != null);
+    assert(maxScrollExtent != null);
+    if (!nearEqual(_minScrollExtent, minScrollExtent, Tolerance.defaultTolerance.distance) ||
+        !nearEqual(_maxScrollExtent, maxScrollExtent, Tolerance.defaultTolerance.distance) ||
+        _didChangeViewportDimensionOrReceiveCorrection) {
+      assert(minScrollExtent != null);
+      assert(maxScrollExtent != null);
+      assert(minScrollExtent <= maxScrollExtent);
       _minScrollExtent = minScrollExtent;
       _maxScrollExtent = maxScrollExtent;
       _haveDimensions = true;
       applyNewDimensions();
-      _didChangeViewportDimension = false;
+      _didChangeViewportDimensionOrReceiveCorrection = false;
     }
     return true;
   }
@@ -395,37 +512,63 @@ abstract class ScrollPosition extends ViewportOffset with ScrollMetrics {
   ///
   /// See also:
   ///
-  /// * [applyViewportDimension], which is called when new
-  ///   viewport dimensions are established.
-  /// * [applyContentDimensions], which is called after new
-  ///   viewport dimensions are established, and also if new content dimensions
-  ///   are established, and which calls [ScrollPosition.applyNewDimensions].
+  ///  * [applyViewportDimension], which is called when new
+  ///    viewport dimensions are established.
+  ///  * [applyContentDimensions], which is called after new
+  ///    viewport dimensions are established, and also if new content dimensions
+  ///    are established, and which calls [ScrollPosition.applyNewDimensions].
   @protected
   @mustCallSuper
   void applyNewDimensions() {
     assert(pixels != null);
     activity.applyNewDimensions();
+    _updateSemanticActions(); // will potentially request a semantics update.
   }
 
   /// Animates the position such that the given object is as visible as possible
   /// by just scrolling this position.
-  Future<Null> ensureVisible(RenderObject object, {
-    double alignment: 0.0,
-    Duration duration: Duration.ZERO,
-    Curve curve: Curves.ease,
+  ///
+  /// See also:
+  ///
+  ///  * [ScrollPositionAlignmentPolicy] for the way in which `alignment` is
+  ///    applied, and the way the given `object` is aligned.
+  Future<void> ensureVisible(
+    RenderObject object, {
+    double alignment = 0.0,
+    Duration duration = Duration.zero,
+    Curve curve = Curves.ease,
+    ScrollPositionAlignmentPolicy alignmentPolicy = ScrollPositionAlignmentPolicy.explicit,
   }) {
+    assert(alignmentPolicy != null);
     assert(object.attached);
     final RenderAbstractViewport viewport = RenderAbstractViewport.of(object);
     assert(viewport != null);
 
-    final double target = viewport.getOffsetToReveal(object, alignment).clamp(minScrollExtent, maxScrollExtent);
+    double target;
+    switch (alignmentPolicy) {
+      case ScrollPositionAlignmentPolicy.explicit:
+        target = viewport.getOffsetToReveal(object, alignment).offset.clamp(minScrollExtent, maxScrollExtent) as double;
+        break;
+      case ScrollPositionAlignmentPolicy.keepVisibleAtEnd:
+        target = viewport.getOffsetToReveal(object, 1.0).offset.clamp(minScrollExtent, maxScrollExtent) as double;
+        if (target < pixels) {
+          target = pixels;
+        }
+        break;
+      case ScrollPositionAlignmentPolicy.keepVisibleAtStart:
+        target = viewport.getOffsetToReveal(object, 0.0).offset.clamp(minScrollExtent, maxScrollExtent) as double;
+        if (target > pixels) {
+          target = pixels;
+        }
+        break;
+    }
 
     if (target == pixels)
-      return new Future<Null>.value();
+      return Future<void>.value();
 
-    if (duration == Duration.ZERO) {
+    if (duration == Duration.zero) {
       jumpTo(target);
-      return new Future<Null>.value();
+      return Future<void>.value();
     }
 
     return animateTo(target, duration: duration, curve: curve);
@@ -434,9 +577,9 @@ abstract class ScrollPosition extends ViewportOffset with ScrollMetrics {
   /// This notifier's value is true if a scroll is underway and false if the scroll
   /// position is idle.
   ///
-  /// Listeners added by stateful widgets should be in the widget's
+  /// Listeners added by stateful widgets should be removed in the widget's
   /// [State.dispose] method.
-  final ValueNotifier<bool> isScrollingNotifier = new ValueNotifier<bool>(false);
+  final ValueNotifier<bool> isScrollingNotifier = ValueNotifier<bool>(false);
 
   /// Animates the position from its current value to the given value.
   ///
@@ -465,7 +608,9 @@ abstract class ScrollPosition extends ViewportOffset with ScrollMetrics {
   /// animation, use [jumpTo].
   ///
   /// The animation is typically handled by an [DrivenScrollActivity].
-  Future<Null> animateTo(double to, {
+  @override
+  Future<void> animateTo(
+    double to, {
     @required Duration duration,
     @required Curve curve,
   });
@@ -479,10 +624,37 @@ abstract class ScrollPosition extends ViewportOffset with ScrollMetrics {
   /// If this method changes the scroll position, a sequence of start/update/end
   /// scroll notifications will be dispatched. No overscroll notifications can
   /// be generated by this method.
+  @override
   void jumpTo(double value);
 
+  /// Calls [jumpTo] if duration is null or [Duration.zero], otherwise
+  /// [animateTo] is called.
+  ///
+  /// If [clamp] is true (the default) then [to] is adjusted to prevent over or
+  /// underscroll.
+  ///
+  /// If [animateTo] is called then [curve] defaults to [Curves.ease].
+  @override
+  Future<void> moveTo(
+    double to, {
+    Duration duration,
+    Curve curve,
+    bool clamp = true,
+  }) {
+    assert(to != null);
+    assert(clamp != null);
+
+    if (clamp)
+      to = to.clamp(minScrollExtent, maxScrollExtent) as double;
+
+    return super.moveTo(to, duration: duration, curve: curve);
+  }
+
+  @override
+  bool get allowImplicitScrolling => physics.allowImplicitScrolling;
+
   /// Deprecated. Use [jumpTo] or a custom [ScrollPosition] instead.
-  @Deprecated('This will lead to bugs.')
+  @Deprecated('This will lead to bugs.') // ignore: flutter_deprecation_syntax, https://github.com/flutter/flutter/issues/44609
   void jumpToWithoutSettling(double value);
 
   /// Stop the current activity and start a [HoldScrollActivity].
@@ -503,6 +675,7 @@ abstract class ScrollPosition extends ViewportOffset with ScrollMetrics {
   ///
   /// Call [beginActivity] to change the current activity.
   @protected
+  @visibleForTesting
   ScrollActivity get activity => _activity;
   ScrollActivity _activity;
 
@@ -512,7 +685,7 @@ abstract class ScrollPosition extends ViewportOffset with ScrollMetrics {
   /// If the argument is null, this method has no effect. This is convenient for
   /// cases where the new activity is obtained from another method, and that
   /// method might return null, since it means the caller does not have to
-  /// explictly null-check the argument.
+  /// explicitly null-check the argument.
   void beginActivity(ScrollActivity newActivity) {
     if (newActivity == null)
       return;
@@ -540,19 +713,19 @@ abstract class ScrollPosition extends ViewportOffset with ScrollMetrics {
 
   /// Called by [beginActivity] to report when an activity has started.
   void didStartScroll() {
-    activity.dispatchScrollStartNotification(cloneMetrics(), context.notificationContext);
+    activity.dispatchScrollStartNotification(copyWith(), context.notificationContext);
   }
 
   /// Called by [setPixels] to report a change to the [pixels] position.
   void didUpdateScrollPositionBy(double delta) {
-    activity.dispatchScrollUpdateNotification(cloneMetrics(), context.notificationContext, delta);
+    activity.dispatchScrollUpdateNotification(copyWith(), context.notificationContext, delta);
   }
 
   /// Called by [beginActivity] to report when an activity has ended.
   ///
   /// This also saves the scroll offset using [saveScrollOffset].
   void didEndScroll() {
-    activity.dispatchScrollEndNotification(cloneMetrics(), context.notificationContext);
+    activity.dispatchScrollEndNotification(copyWith(), context.notificationContext);
     if (keepScrollOffset)
       saveScrollOffset();
   }
@@ -562,22 +735,44 @@ abstract class ScrollPosition extends ViewportOffset with ScrollMetrics {
   /// not applied to the [pixels] value.
   void didOverscrollBy(double value) {
     assert(activity.isScrolling);
-    activity.dispatchOverscrollNotification(cloneMetrics(), context.notificationContext, value);
+    activity.dispatchOverscrollNotification(copyWith(), context.notificationContext, value);
   }
 
   /// Dispatches a notification that the [userScrollDirection] has changed.
   ///
   /// Subclasses should call this function when they change [userScrollDirection].
   void didUpdateScrollDirection(ScrollDirection direction) {
-    new UserScrollNotification(metrics: cloneMetrics(), context: context.notificationContext, direction: direction).dispatch(context.notificationContext);
+    UserScrollNotification(metrics: copyWith(), context: context.notificationContext, direction: direction).dispatch(context.notificationContext);
+  }
+
+  /// Provides a heuristic to determine if expensive frame-bound tasks should be
+  /// deferred.
+  ///
+  /// The actual work of this is delegated to the [physics] via
+  /// [ScrollPhysics.recommendDeferredScrolling] called with the current
+  /// [activity]'s [ScrollActivity.velocity].
+  ///
+  /// Returning true from this method indicates that the [ScrollPhysics]
+  /// evaluate the current scroll velocity to be great enough that expensive
+  /// operations impacting the UI should be deferred.
+  bool recommendDeferredLoading(BuildContext context) {
+    assert(context != null);
+    assert(activity != null);
+    assert(activity.velocity != null);
+    return physics.recommendDeferredLoading(activity.velocity, copyWith(), context);
   }
 
   @override
   void dispose() {
-    assert(pixels != null);
     activity?.dispose(); // it will be null if it got absorbed by another ScrollPosition
     _activity = null;
     super.dispose();
+  }
+
+  @override
+  void notifyListeners() {
+    _updateSemanticActions(); // will potentially request a semantics update.
+    super.notifyListeners();
   }
 
   @override

@@ -1,32 +1,41 @@
+// Copyright 2014 The Flutter Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 package com.example.view;
 
 import android.content.Intent;
 import android.os.Bundle;
-import android.support.design.widget.FloatingActionButton;
-import android.support.v7.app.AppCompatActivity;
 import android.view.View;
 import android.widget.TextView;
+import androidx.appcompat.app.ActionBar;
+import androidx.appcompat.app.AppCompatActivity;
+import com.google.android.material.floatingactionbutton.FloatingActionButton;
+import io.flutter.embedding.android.FlutterView;
+import io.flutter.embedding.engine.FlutterEngine;
+import io.flutter.embedding.engine.dart.DartExecutor;
+import io.flutter.embedding.engine.dart.DartExecutor.DartEntrypoint;
 import io.flutter.plugin.common.BasicMessageChannel;
 import io.flutter.plugin.common.BasicMessageChannel.MessageHandler;
 import io.flutter.plugin.common.BasicMessageChannel.Reply;
 import io.flutter.plugin.common.StringCodec;
-import io.flutter.view.FlutterMain;
-import io.flutter.view.FlutterView;
 import java.util.ArrayList;
 
 public class MainActivity extends AppCompatActivity {
+    private static FlutterEngine flutterEngine;
+
     private FlutterView flutterView;
     private int counter;
     private static final String CHANNEL = "increment";
     private static final String EMPTY_MESSAGE = "";
     private static final String PING = "ping";
-    private BasicMessageChannel messageChannel;
+    private BasicMessageChannel<String> messageChannel;
 
     private String[] getArgsFromIntent(Intent intent) {
         // Before adding more entries to this list, consider that arbitrary
         // Android applications can generate intents with extra data and that
         // there are many security-sensitive args in the binary.
-        ArrayList<String> args = new ArrayList<String>();
+        ArrayList<String> args = new ArrayList<>();
         if (intent.getBooleanExtra("trace-startup", false)) {
             args.add("--trace-startup");
         }
@@ -43,21 +52,27 @@ public class MainActivity extends AppCompatActivity {
         return null;
     }
 
-
-
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
         String[] args = getArgsFromIntent(getIntent());
-        FlutterMain.ensureInitializationComplete(getApplicationContext(), args);
+        if (flutterEngine == null) {
+            flutterEngine = new FlutterEngine(this, args);
+            flutterEngine.getDartExecutor().executeDartEntrypoint(
+                DartEntrypoint.createDefault()
+            );
+        }
         setContentView(R.layout.flutter_view_layout);
-        getSupportActionBar().hide();
+        ActionBar supportActionBar = getSupportActionBar();
+        if (supportActionBar != null) {
+            supportActionBar.hide();
+        }
 
-        flutterView = (FlutterView) findViewById(R.id.flutter_view);
-        flutterView.runFromBundle(FlutterMain.findAppBundlePath(getApplicationContext()), null);
+        flutterView = findViewById(R.id.flutter_view);
+        flutterView.attachToFlutterEngine(flutterEngine);
 
-        messageChannel = new BasicMessageChannel<>(flutterView, CHANNEL, StringCodec.INSTANCE);
+        messageChannel = new BasicMessageChannel<>(flutterEngine.getDartExecutor(), CHANNEL, StringCodec.INSTANCE);
         messageChannel.
             setMessageHandler(new MessageHandler<String>() {
                 @Override
@@ -67,7 +82,7 @@ public class MainActivity extends AppCompatActivity {
                 }
             });
 
-        FloatingActionButton fab = (FloatingActionButton) findViewById(R.id.button);
+        FloatingActionButton fab = findViewById(R.id.button);
         fab.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -82,28 +97,32 @@ public class MainActivity extends AppCompatActivity {
 
     private void onFlutterIncrement() {
         counter++;
-        TextView textView = (TextView) findViewById(R.id.button_tap);
+        TextView textView = findViewById(R.id.button_tap);
         String value = "Flutter button tapped " + counter + (counter == 1 ? " time" : " times");
         textView.setText(value);
     }
 
     @Override
-    protected void onDestroy() {
-        if (flutterView != null) {
-            flutterView.destroy();
-        }
-        super.onDestroy();
+    protected void onResume() {
+        super.onResume();
+        flutterEngine.getLifecycleChannel().appIsResumed();
     }
 
     @Override
     protected void onPause() {
         super.onPause();
-        flutterView.onPause();
+        flutterEngine.getLifecycleChannel().appIsInactive();
     }
 
     @Override
-    protected void onPostResume() {
-        super.onPostResume();
-        flutterView.onPostResume();
+    protected void onStop() {
+        super.onStop();
+        flutterEngine.getLifecycleChannel().appIsPaused();
+    }
+
+    @Override
+    protected void onDestroy() {
+        flutterView.detachFromFlutterEngine();
+        super.onDestroy();
     }
 }

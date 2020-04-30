@@ -1,9 +1,14 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 import 'dart:ui' show Color, hashValues;
 import 'dart:ui' as ui show lerpDouble;
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/painting.dart';
+
+import 'framework.dart' show BuildContext;
 
 /// Defines the color, opacity, and size of icons.
 ///
@@ -13,12 +18,13 @@ import 'dart:ui' as ui show lerpDouble;
 /// To obtain the current icon theme, use [IconTheme.of]. To convert an icon
 /// theme to a version with all the fields filled in, use [new
 /// IconThemeData.fallback].
-class IconThemeData {
+@immutable
+class IconThemeData with Diagnosticable {
   /// Creates an icon theme data.
   ///
   /// The opacity applies to both explicit and default icon colors. The value
   /// is clamped between 0.0 and 1.0.
-  const IconThemeData({ this.color, double opacity, this.size }) : _opacity = opacity;
+  const IconThemeData({this.color, double opacity, this.size}) : _opacity = opacity;
 
   /// Creates an icon them with some reasonable default values.
   ///
@@ -31,10 +37,10 @@ class IconThemeData {
   /// Creates a copy of this icon theme but with the given fields replaced with
   /// the new values.
   IconThemeData copyWith({ Color color, double opacity, double size }) {
-    return new IconThemeData(
+    return IconThemeData(
       color: color ?? this.color,
       opacity: opacity ?? this.opacity,
-      size: size ?? this.size
+      size: size ?? this.size,
     );
   }
 
@@ -47,9 +53,27 @@ class IconThemeData {
     return copyWith(
       color: other.color,
       opacity: other.opacity,
-      size: other.size
+      size: other.size,
     );
   }
+
+  /// Called by [IconTheme.of] to convert this instance to an [IconThemeData]
+  /// that fits the given [BuildContext].
+  ///
+  /// This method gives the ambient [IconThemeData] a chance to update itself,
+  /// after it's been retrieved by [IconTheme.of], and before being returned as
+  /// the final result. For instance, [CupertinoIconThemeData] overrides this method
+  /// to resolve [color], in case [color] is a [CupertinoDynamicColor] and needs
+  /// to be resolved against the given [BuildContext] before it can be used as a
+  /// regular [Color].
+  ///
+  /// The default implementation returns this [IconThemeData] as-is.
+  ///
+  /// See also:
+  ///
+  ///  * [CupertinoIconThemeData.resolve] an implementation that resolves
+  ///    [CupertinoIconThemeData.color] before returning.
+  IconThemeData resolve(BuildContext context) => this;
 
   /// Whether all the properties of this object are non-null.
   bool get isConcrete => color != null && opacity != null && size != null;
@@ -58,45 +82,42 @@ class IconThemeData {
   final Color color;
 
   /// An opacity to apply to both explicit and default icon colors.
-  double get opacity => _opacity?.clamp(0.0, 1.0);
+  double get opacity => _opacity?.clamp(0.0, 1.0) as double;
   final double _opacity;
 
   /// The default size for icons.
   final double size;
 
   /// Linearly interpolate between two icon theme data objects.
-  static IconThemeData lerp(IconThemeData begin, IconThemeData end, double t) {
-    return new IconThemeData(
-      color: Color.lerp(begin.color, end.color, t),
-      opacity: ui.lerpDouble(begin.opacity, end.opacity, t),
-      size: ui.lerpDouble(begin.size, end.size, t)
+  ///
+  /// {@macro dart.ui.shadow.lerp}
+  static IconThemeData lerp(IconThemeData a, IconThemeData b, double t) {
+    assert(t != null);
+    return IconThemeData(
+      color: Color.lerp(a?.color, b?.color, t),
+      opacity: ui.lerpDouble(a?.opacity, b?.opacity, t),
+      size: ui.lerpDouble(a?.size, b?.size, t),
     );
   }
 
   @override
-  bool operator ==(dynamic other) {
+  bool operator ==(Object other) {
     if (other.runtimeType != runtimeType)
       return false;
-    final IconThemeData typedOther = other;
-    return color == typedOther.color
-        && opacity == typedOther.opacity
-        && size == typedOther.size;
+    return other is IconThemeData
+        && other.color == color
+        && other.opacity == opacity
+        && other.size == size;
   }
 
   @override
   int get hashCode => hashValues(color, opacity, size);
 
   @override
-  String toString() {
-    final List<String> result = <String>[];
-    if (color != null)
-      result.add('color: $color');
-    if (_opacity != null)
-      result.add('opacity: $_opacity');
-    if (size != null)
-      result.add('size: $size');
-    if (result.isEmpty)
-      return '<no theme>';
-    return result.join(', ');
+  void debugFillProperties(DiagnosticPropertiesBuilder properties) {
+    super.debugFillProperties(properties);
+    properties.add(ColorProperty('color', color, defaultValue: null));
+    properties.add(DoubleProperty('opacity', opacity, defaultValue: null));
+    properties.add(DoubleProperty('size', size, defaultValue: null));
   }
 }

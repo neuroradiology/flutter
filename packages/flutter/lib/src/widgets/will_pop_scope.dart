@@ -1,10 +1,9 @@
-// Copyright 2016 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'package:flutter/foundation.dart';
-
 import 'framework.dart';
+import 'navigator.dart';
 import 'routes.dart';
 
 /// Registers a callback to veto attempts by the user to dismiss the enclosing
@@ -27,6 +26,8 @@ class WillPopScope extends StatefulWidget {
        super(key: key);
 
   /// The widget below this widget in the tree.
+  ///
+  /// {@macro flutter.widgets.child}
   final Widget child;
 
   /// Called to veto attempts by the user to dismiss the enclosing [ModalRoute].
@@ -36,7 +37,7 @@ class WillPopScope extends StatefulWidget {
   final WillPopCallback onWillPop;
 
   @override
-  _WillPopScopeState createState() => new _WillPopScopeState();
+  _WillPopScopeState createState() => _WillPopScopeState();
 }
 
 class _WillPopScopeState extends State<WillPopScope> {

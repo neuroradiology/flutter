@@ -1,20 +1,18 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-import 'package:flutter/foundation.dart';
 
 import 'basic.dart';
 import 'framework.dart';
 import 'navigator.dart';
-import 'overlay.dart';
 import 'routes.dart';
 
 /// A modal route that replaces the entire screen.
 abstract class PageRoute<T> extends ModalRoute<T> {
   /// Creates a modal route that replaces the entire screen.
   PageRoute({
-    RouteSettings settings: const RouteSettings(),
-    this.fullscreenDialog: false,
+    RouteSettings settings,
+    this.fullscreenDialog = false,
   }) : super(settings: settings);
 
   /// Whether this page route is a full-screen dialog.
@@ -32,36 +30,11 @@ abstract class PageRoute<T> extends ModalRoute<T> {
   bool get barrierDismissible => false;
 
   @override
-  bool canTransitionTo(TransitionRoute<dynamic> nextRoute) => nextRoute is PageRoute<dynamic>;
+  bool canTransitionTo(TransitionRoute<dynamic> nextRoute) => nextRoute is PageRoute;
 
   @override
-  bool canTransitionFrom(TransitionRoute<dynamic> nextRoute) => nextRoute is PageRoute<dynamic>;
-
-  @override
-  AnimationController createAnimationController() {
-    final AnimationController controller = super.createAnimationController();
-    if (settings.isInitialRoute)
-      controller.value = 1.0;
-    return controller;
-  }
-
-  /// Subclasses can override this method to customize how heroes are inserted.
-  void insertHeroOverlayEntry(OverlayEntry entry, Object tag, OverlayState overlay) {
-    overlay.insert(entry);
-  }
+  bool canTransitionFrom(TransitionRoute<dynamic> previousRoute) => previousRoute is PageRoute;
 }
-
-/// Signature for the [PageRouteBuilder] function that builds the route's
-/// primary contents.
-///
-/// See [ModalRoute.buildPage] for complete definition of the parameters.
-typedef Widget RoutePageBuilder(BuildContext context, Animation<double> animation, Animation<double> secondaryAnimation);
-
-/// Signature for the [PageRouteBuilder] function that builds the route's
-/// transitions.
-///
-/// See [ModalRoute.buildTransitions] for complete definition of the parameters.
-typedef Widget RouteTransitionsBuilder(BuildContext context, Animation<double> animation, Animation<double> secondaryAnimation, Widget child);
 
 Widget _defaultTransitionsBuilder(BuildContext context, Animation<double> animation, Animation<double> secondaryAnimation, Widget child) {
   return child;
@@ -72,25 +45,28 @@ Widget _defaultTransitionsBuilder(BuildContext context, Animation<double> animat
 /// Callers must define the [pageBuilder] function which creates the route's
 /// primary contents. To add transitions define the [transitionsBuilder] function.
 class PageRouteBuilder<T> extends PageRoute<T> {
-  /// Creates a route that deletates to builder callbacks.
+  /// Creates a route that delegates to builder callbacks.
   ///
   /// The [pageBuilder], [transitionsBuilder], [opaque], [barrierDismissible],
-  /// and [maintainState] arguments must not be null.
+  /// [maintainState], and [fullscreenDialog] arguments must not be null.
   PageRouteBuilder({
-    RouteSettings settings: const RouteSettings(),
+    RouteSettings settings,
     @required this.pageBuilder,
-    this.transitionsBuilder: _defaultTransitionsBuilder,
-    this.transitionDuration: const Duration(milliseconds: 300),
-    this.opaque: true,
-    this.barrierDismissible: false,
-    this.barrierColor: null,
-    this.maintainState: true,
+    this.transitionsBuilder = _defaultTransitionsBuilder,
+    this.transitionDuration = const Duration(milliseconds: 300),
+    this.opaque = true,
+    this.barrierDismissible = false,
+    this.barrierColor,
+    this.barrierLabel,
+    this.maintainState = true,
+    bool fullscreenDialog = false,
   }) : assert(pageBuilder != null),
        assert(transitionsBuilder != null),
        assert(opaque != null),
        assert(barrierDismissible != null),
        assert(maintainState != null),
-       super(settings: settings);
+       assert(fullscreenDialog != null),
+       super(settings: settings, fullscreenDialog: fullscreenDialog);
 
   /// Used build the route's primary contents.
   ///
@@ -113,6 +89,9 @@ class PageRouteBuilder<T> extends PageRoute<T> {
 
   @override
   final Color barrierColor;
+
+  @override
+  final String barrierLabel;
 
   @override
   final bool maintainState;

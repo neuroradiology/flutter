@@ -1,4 +1,4 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -9,33 +9,101 @@ import 'package:flutter/widgets.dart';
 void main() {
   testWidgets('Align smoke test', (WidgetTester tester) async {
     await tester.pumpWidget(
-      new Align(
-        child: new Container(),
-        alignment: const FractionalOffset(0.75, 0.75)
-      )
+      Align(
+        child: Container(),
+        alignment: const Alignment(0.50, 0.50),
+      ),
     );
 
     await tester.pumpWidget(
-      new Align(
-        child: new Container(),
-        alignment: const FractionalOffset(0.5, 0.5)
-      )
+      Align(
+        child: Container(),
+        alignment: const Alignment(0.0, 0.0),
+      ),
+    );
+
+    await tester.pumpWidget(
+      const Align(
+        key: GlobalObjectKey<State<StatefulWidget>>(null),
+        alignment: Alignment.topLeft,
+      ),
+    );
+    await tester.pumpWidget(const Directionality(
+      textDirection: TextDirection.rtl,
+      child: Align(
+        key: GlobalObjectKey<State<StatefulWidget>>(null),
+        alignment: AlignmentDirectional.topStart,
+      ),
+    ));
+    await tester.pumpWidget(
+      const Align(
+        key: GlobalObjectKey<State<StatefulWidget>>(null),
+        alignment: Alignment.topLeft,
+      ),
     );
   });
 
+  testWidgets('Align control test (LTR)', (WidgetTester tester) async {
+    await tester.pumpWidget(const Directionality(
+      textDirection: TextDirection.ltr,
+      child: Align(
+        child: SizedBox(width: 100.0, height: 80.0),
+        alignment: AlignmentDirectional.topStart,
+      ),
+    ));
+
+    expect(tester.getTopLeft(find.byType(SizedBox)).dx, 0.0);
+    expect(tester.getBottomRight(find.byType(SizedBox)).dx, 100.0);
+
+    await tester.pumpWidget(const Directionality(
+      textDirection: TextDirection.ltr,
+      child: Align(
+        child: SizedBox(width: 100.0, height: 80.0),
+        alignment: Alignment.topLeft,
+      ),
+    ));
+
+    expect(tester.getTopLeft(find.byType(SizedBox)).dx, 0.0);
+    expect(tester.getBottomRight(find.byType(SizedBox)).dx, 100.0);
+  });
+
+  testWidgets('Align control test (RTL)', (WidgetTester tester) async {
+    await tester.pumpWidget(const Directionality(
+      textDirection: TextDirection.rtl,
+      child: Align(
+        child: SizedBox(width: 100.0, height: 80.0),
+        alignment: AlignmentDirectional.topStart,
+      ),
+    ));
+
+    expect(tester.getTopLeft(find.byType(SizedBox)).dx, 700.0);
+    expect(tester.getBottomRight(find.byType(SizedBox)).dx, 800.0);
+
+    await tester.pumpWidget(const Directionality(
+      textDirection: TextDirection.ltr,
+      child: Align(
+        child: SizedBox(width: 100.0, height: 80.0),
+        alignment: Alignment.topLeft,
+      ),
+    ));
+
+    expect(tester.getTopLeft(find.byType(SizedBox)).dx, 0.0);
+    expect(tester.getBottomRight(find.byType(SizedBox)).dx, 100.0);
+  });
+
   testWidgets('Shrink wraps in finite space', (WidgetTester tester) async {
-    final GlobalKey alignKey = new GlobalKey();
+    final GlobalKey alignKey = GlobalKey();
     await tester.pumpWidget(
-      new SingleChildScrollView(
-        child: new Align(
+      SingleChildScrollView(
+        child: Align(
           key: alignKey,
-          child: new Container(
+          child: const SizedBox(
             width: 10.0,
-            height: 10.0
+            height: 10.0,
           ),
-          alignment: const FractionalOffset(0.50, 0.50)
-        )
-      )
+          alignment: const Alignment(0.0, 0.0),
+        ),
+      ),
     );
 
     final Size size = alignKey.currentContext.size;

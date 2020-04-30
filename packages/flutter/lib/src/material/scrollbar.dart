@@ -1,19 +1,25 @@
-// Copyright 2016 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 import 'dart:async';
-import 'dart:math' as math;
 
-import 'package:flutter/foundation.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/widgets.dart';
 
 import 'theme.dart';
+
+const double _kScrollbarThickness = 6.0;
+const Duration _kScrollbarFadeDuration = Duration(milliseconds: 300);
+const Duration _kScrollbarTimeToFade = Duration(milliseconds: 600);
 
 /// A material design scrollbar.
 ///
 /// A scrollbar indicates which portion of a [Scrollable] widget is actually
 /// visible.
+///
+/// Dynamically changes to an iOS style scrollbar that looks like
+/// [CupertinoScrollbar] on the iOS platform.
 ///
 /// To add a scrollbar to a [ScrollView], simply wrap the scroll view widget in
 /// a [Scrollbar] widget.
@@ -30,165 +36,170 @@ class Scrollbar extends StatefulWidget {
   const Scrollbar({
     Key key,
     @required this.child,
+    this.controller,
+    this.isAlwaysShown = false,
   }) : super(key: key);
 
-  /// The subtree to place inside the [Scrollbar].
+  /// The widget below this widget in the tree.
   ///
-  /// This should include a source of [ScrollNotification] notifications,
-  /// typically a [Scrollable] widget.
+  /// The scrollbar will be stacked on top of this child. This child (and its
+  /// subtree) should include a source of [ScrollNotification] notifications.
+  ///
+  /// Typically a [ListView] or [CustomScrollView].
   final Widget child;
 
+  /// {@macro flutter.cupertino.cupertinoScrollbar.controller}
+  final ScrollController controller;
+
+  /// {@macro flutter.cupertino.cupertinoScrollbar.isAlwaysShown}
+  final bool isAlwaysShown;
+
   @override
-  _ScrollbarState createState() => new _ScrollbarState();
+  _ScrollbarState createState() => _ScrollbarState();
 }
 
 class _ScrollbarState extends State<Scrollbar> with TickerProviderStateMixin {
-  _ScrollbarPainter _painter;
+  ScrollbarPainter _materialPainter;
+  TextDirection _textDirection;
+  Color _themeColor;
+  bool _useCupertinoScrollbar;
+  AnimationController _fadeoutAnimationController;
+  Animation<double> _fadeoutOpacityAnimation;
+  Timer _fadeoutTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _fadeoutAnimationController = AnimationController(
+      vsync: this,
+      duration: _kScrollbarFadeDuration,
+    );
+    _fadeoutOpacityAnimation = CurvedAnimation(
+      parent: _fadeoutAnimationController,
+      curve: Curves.fastOutSlowIn,
+    );
+  }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _painter ??= new _ScrollbarPainter(this);
-    _painter.color = Theme.of(context).highlightColor;
+    assert((() {
+      _useCupertinoScrollbar = null;
+      return true;
+    })());
+    final ThemeData theme = Theme.of(context);
+    switch (theme.platform) {
+      case TargetPlatform.iOS:
+      case TargetPlatform.macOS:
+        // On iOS, stop all local animations. CupertinoScrollbar has its own
+        // animations.
+        _fadeoutTimer?.cancel();
+        _fadeoutTimer = null;
+        _fadeoutAnimationController.reset();
+        _useCupertinoScrollbar = true;
+        break;
+      case TargetPlatform.android:
+      case TargetPlatform.fuchsia:
+      case TargetPlatform.linux:
+      case TargetPlatform.windows:
+        _themeColor = theme.highlightColor.withOpacity(1.0);
+        _textDirection = Directionality.of(context);
+        _materialPainter = _buildMaterialScrollbarPainter();
+        _useCupertinoScrollbar = false;
+        WidgetsBinding.instance.addPostFrameCallback((Duration duration) {
+          if (widget.isAlwaysShown) {
+            assert(widget.controller != null);
+            // Wait one frame and cause an empty scroll event.  This allows the
+            // thumb to show immediately when isAlwaysShown is true.  A scroll
+            // event is required in order to paint the thumb.
+            widget.controller.position.didUpdateScrollPositionBy(0);
+          }
+        });
+        break;
+    }
+    assert(_useCupertinoScrollbar != null);
+  }
+
+  @override
+  void didUpdateWidget(Scrollbar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isAlwaysShown != oldWidget.isAlwaysShown) {
+      assert(widget.controller != null);
+      if (widget.isAlwaysShown == false) {
+        _fadeoutAnimationController.reverse();
+      } else {
+        _fadeoutAnimationController.animateTo(1.0);
+      }
+    }
+  }
+
+  ScrollbarPainter _buildMaterialScrollbarPainter() {
+    return ScrollbarPainter(
+      color: _themeColor,
+      textDirection: _textDirection,
+      thickness: _kScrollbarThickness,
+      fadeoutOpacityAnimation: _fadeoutOpacityAnimation,
+      padding: MediaQuery.of(context).padding,
+    );
   }
 
   bool _handleScrollNotification(ScrollNotification notification) {
-    if (notification is ScrollUpdateNotification ||
-        notification is OverscrollNotification)
-      _painter.update(notification.metrics, notification.metrics.axisDirection);
+    final ScrollMetrics metrics = notification.metrics;
+    if (metrics.maxScrollExtent <= metrics.minScrollExtent) {
+      return false;
+    }
+
+    // iOS sub-delegates to the CupertinoScrollbar instead and doesn't handle
+    // scroll notifications here.
+    if (!_useCupertinoScrollbar &&
+        (notification is ScrollUpdateNotification ||
+            notification is OverscrollNotification)) {
+      if (_fadeoutAnimationController.status != AnimationStatus.forward) {
+        _fadeoutAnimationController.forward();
+      }
+
+      _materialPainter.update(
+        notification.metrics,
+        notification.metrics.axisDirection,
+      );
+      if (!widget.isAlwaysShown) {
+        _fadeoutTimer?.cancel();
+        _fadeoutTimer = Timer(_kScrollbarTimeToFade, () {
+          _fadeoutAnimationController.reverse();
+          _fadeoutTimer = null;
+        });
+      }
+    }
     return false;
   }
 
   @override
   void dispose() {
-    _painter.dispose();
+    _fadeoutAnimationController.dispose();
+    _fadeoutTimer?.cancel();
+    _materialPainter?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return new NotificationListener<ScrollNotification>(
+    if (_useCupertinoScrollbar) {
+      return CupertinoScrollbar(
+        child: widget.child,
+        isAlwaysShown: widget.isAlwaysShown,
+        controller: widget.controller,
+      );
+    }
+    return NotificationListener<ScrollNotification>(
       onNotification: _handleScrollNotification,
-      // TODO(ianh): Maybe we should try to collapse out these repaint
-      // boundaries when the scroll bars are invisible.
-      child: new RepaintBoundary(
-        child: new CustomPaint(
-          foregroundPainter: _painter,
-          child: new RepaintBoundary(
+      child: RepaintBoundary(
+        child: CustomPaint(
+          foregroundPainter: _materialPainter,
+          child: RepaintBoundary(
             child: widget.child,
           ),
         ),
       ),
     );
   }
-}
-
-class _ScrollbarPainter extends ChangeNotifier implements CustomPainter {
-  _ScrollbarPainter(TickerProvider vsync)
-    : assert(vsync != null) {
-    _fadeController = new AnimationController(duration: _kThumbFadeDuration, vsync: vsync);
-    _opacity = new CurvedAnimation(parent: _fadeController, curve: Curves.fastOutSlowIn)
-      ..addListener(notifyListeners);
-  }
-
-  // animation of the main axis direction
-  AnimationController _fadeController;
-  Animation<double> _opacity;
-
-  // fade-out timer
-  Timer _fadeOut;
-
-  Color get color => _color;
-  Color _color;
-  set color(Color value) {
-    assert(value != null);
-    if (color == value)
-      return;
-    _color = value;
-    notifyListeners();
-  }
-
-  @override
-  void dispose() {
-    _fadeOut?.cancel();
-    _fadeController.dispose();
-    super.dispose();
-  }
-
-  ScrollMetrics _lastMetrics;
-  AxisDirection _lastAxisDirection;
-
-  static const double _kMinThumbExtent = 18.0;
-  static const double _kThumbGirth = 6.0;
-  static const Duration _kThumbFadeDuration = const Duration(milliseconds: 300);
-  static const Duration _kFadeOutTimeout = const Duration(milliseconds: 600);
-
-  void update(ScrollMetrics metrics, AxisDirection axisDirection) {
-    _lastMetrics = metrics;
-    _lastAxisDirection = axisDirection;
-    if (_fadeController.status == AnimationStatus.completed) {
-      notifyListeners();
-    } else if (_fadeController.status != AnimationStatus.forward) {
-      _fadeController.forward();
-    }
-    _fadeOut?.cancel();
-    _fadeOut = new Timer(_kFadeOutTimeout, startFadeOut);
-  }
-
-  void startFadeOut() {
-    _fadeOut = null;
-    _fadeController.reverse();
-  }
-
-  Paint get _paint => new Paint()..color = color.withOpacity(_opacity.value);
-
-  void _paintVerticalThumb(Canvas canvas, Size size, double thumbOffset, double thumbExtent) {
-    final Offset thumbOrigin = new Offset(size.width - _kThumbGirth, thumbOffset);
-    final Size thumbSize = new Size(_kThumbGirth, thumbExtent);
-    canvas.drawRect(thumbOrigin & thumbSize, _paint);
-  }
-
-  void _paintHorizontalThumb(Canvas canvas, Size size, double thumbOffset, double thumbExtent) {
-    final Offset thumbOrigin = new Offset(thumbOffset, size.height - _kThumbGirth);
-    final Size thumbSize = new Size(thumbExtent, _kThumbGirth);
-    canvas.drawRect(thumbOrigin & thumbSize, _paint);
-  }
-
-  void _paintThumb(double before, double inside, double after, double viewport, Canvas canvas, Size size,
-                   void painter(Canvas canvas, Size size, double thumbOffset, double thumbExtent)) {
-    double thumbExtent = math.min(viewport, _kMinThumbExtent);
-    if (before + inside + after > 0.0)
-      thumbExtent = math.max(thumbExtent, viewport * inside / (before + inside + after));
-
-    final double thumbOffset = (before + after > 0.0) ?
-        before * (viewport - thumbExtent) / (before + after) : 0.0;
-
-    painter(canvas, size, thumbOffset, thumbExtent);
-  }
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (_lastAxisDirection == null || _lastMetrics == null || _opacity.value == 0.0)
-      return;
-    switch (_lastAxisDirection) {
-      case AxisDirection.down:
-        _paintThumb(_lastMetrics.extentBefore, _lastMetrics.extentInside, _lastMetrics.extentAfter, size.height, canvas, size, _paintVerticalThumb);
-        break;
-      case AxisDirection.up:
-        _paintThumb(_lastMetrics.extentAfter, _lastMetrics.extentInside, _lastMetrics.extentBefore, size.height, canvas, size, _paintVerticalThumb);
-        break;
-      case AxisDirection.right:
-        _paintThumb(_lastMetrics.extentBefore, _lastMetrics.extentInside, _lastMetrics.extentAfter, size.width, canvas, size, _paintHorizontalThumb);
-        break;
-      case AxisDirection.left:
-        _paintThumb(_lastMetrics.extentAfter, _lastMetrics.extentInside, _lastMetrics.extentBefore, size.width, canvas, size, _paintHorizontalThumb);
-        break;
-    }
-  }
-
-  @override
-  bool hitTest(Offset position) => null;
-
-  @override
-  bool shouldRepaint(_ScrollbarPainter oldDelegate) => false;
 }

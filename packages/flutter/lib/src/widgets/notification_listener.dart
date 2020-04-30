@@ -1,4 +1,4 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -12,7 +12,7 @@ import 'framework.dart';
 /// notification to continue to be dispatched to further ancestors.
 ///
 /// Used by [NotificationListener.onNotification].
-typedef bool NotificationListenerCallback<T extends Notification>(T notification);
+typedef NotificationListenerCallback<T extends Notification> = bool Function(T notification);
 
 /// A notification that can bubble up the widget tree.
 ///
@@ -26,6 +26,10 @@ typedef bool NotificationListenerCallback<T extends Notification>(T notification
 /// widgets with the appropriate type parameters that are ancestors of the given
 /// [BuildContext].
 abstract class Notification {
+  /// Abstract const constructor. This constructor enables subclasses to provide
+  /// const constructors so that they can be used in const expressions.
+  const Notification();
+
   /// Applied to each ancestor of the [dispatch] target.
   ///
   /// The [Notification] class implementation of this method dispatches the
@@ -51,17 +55,19 @@ abstract class Notification {
   ///
   /// The notification will be delivered to any [NotificationListener] widgets
   /// with the appropriate type parameters that are ancestors of the given
-  /// [BuildContext].
+  /// [BuildContext]. If the [BuildContext] is null, the notification is not
+  /// dispatched.
   void dispatch(BuildContext target) {
-    assert(target != null); // Only call dispatch if the widget's State is still mounted.
-    target.visitAncestorElements(visitAncestor);
+    // The `target` may be null if the subtree the notification is supposed to be
+    // dispatched in is in the process of being disposed.
+    target?.visitAncestorElements(visitAncestor);
   }
 
   @override
   String toString() {
     final List<String> description = <String>[];
     debugFillDescription(description);
-    return '$runtimeType(${description.join(", ")})';
+    return '${objectRuntimeType(this, 'Notification')}(${description.join(", ")})';
   }
 
   /// Add additional information to the given description for use by [toString].
@@ -89,10 +95,14 @@ class NotificationListener<T extends Notification> extends StatelessWidget {
   const NotificationListener({
     Key key,
     @required this.child,
-    this.onNotification
+    this.onNotification,
   }) : super(key: key);
 
-  /// The widget below this widget in the tree.
+  /// The widget directly below this widget in the tree.
+  ///
+  /// This is not necessarily the widget that dispatched the notification.
+  ///
+  /// {@macro flutter.widgets.child}
   final Widget child;
 
   /// Called when a notification of the appropriate type arrives at this
@@ -103,6 +113,15 @@ class NotificationListener<T extends Notification> extends StatelessWidget {
   ///
   /// The notification's [Notification.visitAncestor] method is called for each
   /// ancestor, and invokes this callback as appropriate.
+  ///
+  /// Notifications vary in terms of when they are dispatched. There are two
+  /// main possibilities: dispatch between frames, and dispatch during layout.
+  ///
+  /// For notifications that dispatch during layout, such as those that inherit
+  /// from [LayoutChangedNotification], it is too late to call [State.setState]
+  /// in response to the notification (as layout is currently happening in a
+  /// descendant, by definition, since notifications bubble up the tree). For
+  /// widgets that depend on layout, consider a [LayoutBuilder] instead.
   final NotificationListenerCallback<T> onNotification;
 
   bool _dispatch(Notification notification, Element element) {

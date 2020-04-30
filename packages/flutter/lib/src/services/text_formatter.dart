@@ -1,8 +1,12 @@
-// Copyright 2017 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'package:flutter/services.dart';
+import 'dart:math' as math;
+
+import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'text_editing.dart';
+import 'text_input.dart';
 
 /// A [TextInputFormatter] can be optionally injected into an [EditableText]
 /// to provide as-you-type validation and formatting of the text being edited.
@@ -36,36 +40,36 @@ abstract class TextInputFormatter {
   /// [TextEditingValue] at the beginning of the chain.
   TextEditingValue formatEditUpdate(
     TextEditingValue oldValue,
-    TextEditingValue newValue
+    TextEditingValue newValue,
   );
 
   /// A shorthand to creating a custom [TextInputFormatter] which formats
   /// incoming text input changes with the given function.
   static TextInputFormatter withFunction(
-    TextInputFormatFunction formatFunction
+    TextInputFormatFunction formatFunction,
   ) {
-    return new _SimpleTextInputFormatter(formatFunction);
+    return _SimpleTextInputFormatter(formatFunction);
   }
 }
 
 /// Function signature expected for creating custom [TextInputFormatter]
 /// shorthands via [TextInputFormatter.withFunction];
-typedef TextEditingValue TextInputFormatFunction(
-    TextEditingValue oldValue,
-    TextEditingValue newValue,
+typedef TextInputFormatFunction = TextEditingValue Function(
+  TextEditingValue oldValue,
+  TextEditingValue newValue,
 );
 
 /// Wiring for [TextInputFormatter.withFunction].
 class _SimpleTextInputFormatter extends TextInputFormatter {
-  _SimpleTextInputFormatter(this.formatFunction) :
-    assert(formatFunction != null);
+  _SimpleTextInputFormatter(this.formatFunction)
+    : assert(formatFunction != null);
 
   final TextInputFormatFunction formatFunction;
 
   @override
   TextEditingValue formatEditUpdate(
     TextEditingValue oldValue,
-    TextEditingValue newValue
+    TextEditingValue newValue,
   ) {
     return formatFunction(oldValue, newValue);
   }
@@ -92,7 +96,7 @@ class BlacklistingTextInputFormatter extends TextInputFormatter {
   /// The [blacklistedPattern] must not be null.
   BlacklistingTextInputFormatter(
     this.blacklistedPattern, {
-    this.replacementString: '',
+    this.replacementString = '',
   }) : assert(blacklistedPattern != null);
 
   /// A [Pattern] to match and replace incoming [TextEditingValue]s.
@@ -116,7 +120,98 @@ class BlacklistingTextInputFormatter extends TextInputFormatter {
 
   /// A [BlacklistingTextInputFormatter] that forces input to be a single line.
   static final BlacklistingTextInputFormatter singleLineFormatter
-      = new BlacklistingTextInputFormatter(new RegExp(r'\n'));
+      = BlacklistingTextInputFormatter(RegExp(r'\n'));
+}
+
+/// A [TextInputFormatter] that prevents the insertion of more characters
+/// (currently defined as Unicode scalar values) than allowed.
+///
+/// Since this formatter only prevents new characters from being added to the
+/// text, it preserves the existing [TextEditingValue.selection].
+///
+///  * [maxLength], which discusses the precise meaning of "number of
+///    characters" and how it may differ from the intuitive meaning.
+class LengthLimitingTextInputFormatter extends TextInputFormatter {
+  /// Creates a formatter that prevents the insertion of more characters than a
+  /// limit.
+  ///
+  /// The [maxLength] must be null, -1 or greater than zero. If it is null or -1
+  /// then no limit is enforced.
+  LengthLimitingTextInputFormatter(this.maxLength)
+    : assert(maxLength == null || maxLength == -1 || maxLength > 0);
+
+  /// The limit on the number of characters (i.e. Unicode scalar values) this formatter
+  /// will allow.
+  ///
+  /// The value must be null or greater than zero. If it is null, then no limit
+  /// is enforced.
+  ///
+  /// This formatter does not currently count Unicode grapheme clusters (i.e.
+  /// characters visible to the user), it counts Unicode scalar values, which leaves
+  /// out a number of useful possible characters (like many emoji and composed
+  /// characters), so this will be inaccurate in the presence of those
+  /// characters. If you expect to encounter these kinds of characters, be
+  /// generous in the maxLength used.
+  ///
+  /// For instance, the character "ö" can be represented as '\u{006F}\u{0308}',
+  /// which is the letter "o" followed by a composed diaeresis "¨", or it can
+  /// be represented as '\u{00F6}', which is the Unicode scalar value "LATIN
+  /// SMALL LETTER O WITH DIAERESIS". In the first case, the text field will
+  /// count two characters, and the second case will be counted as one
+  /// character, even though the user can see no difference in the input.
+  ///
+  /// Similarly, some emoji are represented by multiple scalar values. The
+  /// Unicode "THUMBS UP SIGN + MEDIUM SKIN TONE MODIFIER", "👍🏽", should be
+  /// counted as a single character, but because it is a combination of two
+  /// Unicode scalar values, '\u{1F44D}\u{1F3FD}', it is counted as two
+  /// characters.
+  final int maxLength;
+
+  // TODO(justinmc): This should be updated to use characters instead of runes,
+  // see the comment in formatEditUpdate.
+  /// Truncate the given TextEditingValue to maxLength runes.
+  @visibleForTesting
+  static TextEditingValue truncate(TextEditingValue value, int maxLength) {
+    final TextSelection newSelection = value.selection.copyWith(
+        baseOffset: math.min(value.selection.start, maxLength),
+        extentOffset: math.min(value.selection.end, maxLength),
+    );
+    final RuneIterator iterator = RuneIterator(value.text);
+    if (iterator.moveNext())
+      for (int count = 0; count < maxLength; ++count)
+        if (!iterator.moveNext())
+          break;
+    final String truncated = value.text.substring(0, iterator.rawIndex);
+    return TextEditingValue(
+      text: truncated,
+      selection: newSelection,
+      composing: TextRange.empty,
+    );
+  }
+
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue, // unused.
+    TextEditingValue newValue,
+  ) {
+    // This does not count grapheme clusters (i.e. characters visible to the user),
+    // it counts Unicode runes, which leaves out a number of useful possible
+    // characters (like many emoji), so this will be inaccurate in the
+    // presence of those characters. The Dart lang bug
+    // https://github.com/dart-lang/sdk/issues/28404 has been filed to
+    // address this in Dart.
+    // TODO(justinmc): convert this to count actual characters using Dart's
+    // characters package (https://pub.dev/packages/characters).
+    if (maxLength != null && maxLength > 0 && newValue.text.runes.length > maxLength) {
+      // If already at the maximum and tried to enter even more, keep the old
+      // value.
+      if (oldValue.text.runes.length == maxLength) {
+        return oldValue;
+      }
+      return truncate(newValue, maxLength);
+    }
+    return newValue;
+  }
 }
 
 /// A [TextInputFormatter] that allows only the insertion of whitelisted
@@ -134,8 +229,8 @@ class WhitelistingTextInputFormatter extends TextInputFormatter {
   /// Creates a formatter that allows only the insertion of whitelisted characters patterns.
   ///
   /// The [whitelistedPattern] must not be null.
-  WhitelistingTextInputFormatter(this.whitelistedPattern) :
-    assert(whitelistedPattern != null);
+  WhitelistingTextInputFormatter(this.whitelistedPattern)
+    : assert(whitelistedPattern != null);
 
   /// A [Pattern] to extract all instances of allowed characters.
   ///
@@ -152,7 +247,7 @@ class WhitelistingTextInputFormatter extends TextInputFormatter {
       (String substring) {
         return whitelistedPattern
             .allMatches(substring)
-            .map((Match match) => match.group(0))
+            .map<String>((Match match) => match.group(0))
             .join();
       } ,
     );
@@ -160,7 +255,7 @@ class WhitelistingTextInputFormatter extends TextInputFormatter {
 
   /// A [WhitelistingTextInputFormatter] that takes in digits `[0-9]` only.
   static final WhitelistingTextInputFormatter digitsOnly
-      = new WhitelistingTextInputFormatter(new RegExp(r'\d+'));
+      = WhitelistingTextInputFormatter(RegExp(r'\d+'));
 }
 
 TextEditingValue _selectionAwareTextManipulation(
@@ -184,12 +279,19 @@ TextEditingValue _selectionAwareTextManipulation(
       value.text.substring(selectionEndIndex)
     );
     manipulatedText = beforeSelection + inSelection + afterSelection;
-    manipulatedSelection = value.selection.copyWith(
-      baseOffset: beforeSelection.length,
-      extentOffset: beforeSelection.length + inSelection.length,
-    );
+    if (value.selection.baseOffset > value.selection.extentOffset) {
+      manipulatedSelection = value.selection.copyWith(
+        baseOffset: beforeSelection.length + inSelection.length,
+        extentOffset: beforeSelection.length,
+      );
+    } else {
+      manipulatedSelection = value.selection.copyWith(
+        baseOffset: beforeSelection.length,
+        extentOffset: beforeSelection.length + inSelection.length,
+      );
+    }
   }
-  return new TextEditingValue(
+  return TextEditingValue(
     text: manipulatedText,
     selection: manipulatedSelection ?? const TextSelection.collapsed(offset: -1),
     composing: manipulatedText == value.text

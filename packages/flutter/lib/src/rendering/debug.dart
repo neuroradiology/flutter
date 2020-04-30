@@ -1,75 +1,35 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
-import 'package:flutter/rendering.dart';
+
+import 'object.dart';
 
 export 'package:flutter/foundation.dart' show debugPrint;
 
 // Any changes to this file should be reflected in the debugAssertAllRenderVarsUnset()
 // function below.
 
-const Color _kDebugPaintSizeColor = const Color(0xFF00FFFF);
-const Color _kDebugPaintSpacingColor = const Color(0x90909090);
-const Color _kDebugPaintPaddingColor = const Color(0x900090FF);
-const Color _kDebugPaintPaddingInnerEdgeColor = const Color(0xFF0090FF);
-const Color _kDebugPaintBoxArrowColor = const Color(0xFFFFFF00);
-const Color _kDebugPaintSliverArrowColor = const Color(0xFF33CC33);
-const Color _kDebugPaintAlphabeticBaselineColor = const Color(0xFF00FF00);
-const Color _kDebugPaintIdeographicBaselineColor = const Color(0xFFFFD000);
-const Color _kDebugPaintLayerBordersColor = const Color(0xFFFF9800);
-const int _kDebugPaintPointersColorValue = 0x00BBBB;
-const HSVColor _kDebugCurrentRepaintColor = const HSVColor.fromAHSV(0.4, 60.0, 1.0, 1.0);
-const double _kDebugRepaintRainbowHueIncrement = 2.0;
+const HSVColor _kDebugDefaultRepaintColor = HSVColor.fromAHSV(0.4, 60.0, 1.0, 1.0);
 
 /// Causes each RenderBox to paint a box around its bounds, and some extra
 /// boxes, such as [RenderPadding], to draw construction lines.
+///
+/// The edges of the boxes are painted as a one-pixel-thick `const Color(0xFF00FFFF)` outline.
+///
+/// Spacing is painted as a solid `const Color(0x90909090)` area.
+///
+/// Padding is filled in solid `const Color(0x900090FF)`, with the inner edge
+/// outlined in `const Color(0xFF0090FF)`, using [debugPaintPadding].
 bool debugPaintSizeEnabled = false;
-
-/// The color to use when painting RenderObject bounds.
-Color debugPaintSizeColor = _kDebugPaintSizeColor;
-
-/// The color to use when painting some boxes that just add space (e.g. an empty
-/// RenderConstrainedBox or [RenderPadding]).
-///
-/// Used by, among other methods, [debugPaintPadding], which is called by
-/// [RenderPadding.debugPaintSize] when [debugPaintSizeEnabled] is true.
-Color debugPaintSpacingColor = _kDebugPaintSpacingColor;
-
-/// The color to use when painting [RenderPadding] edges.
-///
-/// Used by, among other methods, [debugPaintPadding], which is called by
-/// [RenderPadding.debugPaintSize] when [debugPaintSizeEnabled] is true.
-Color debugPaintPaddingColor = _kDebugPaintPaddingColor;
-
-/// The color to use when painting [RenderPadding] edges. This color is painted on
-/// top of [debugPaintPaddingColor].
-///
-/// Used by, among other methods, [debugPaintPadding], which is called by
-/// [RenderPadding.debugPaintSize] when [debugPaintSizeEnabled] is true.
-Color debugPaintPaddingInnerEdgeColor = _kDebugPaintPaddingInnerEdgeColor;
-
-/// The color to use when painting the arrows used to show [RenderPositionedBox] alignment.
-Color debugPaintBoxArrowColor = _kDebugPaintBoxArrowColor;
-
-/// The color to use when painting the arrows used to show [RenderSliver] alignment.
-Color debugPaintSliverArrowColor = _kDebugPaintSliverArrowColor;
 
 /// Causes each RenderBox to paint a line at each of its baselines.
 bool debugPaintBaselinesEnabled = false;
 
-/// The color to use when painting alphabetic baselines.
-Color debugPaintAlphabeticBaselineColor = _kDebugPaintAlphabeticBaselineColor;
-
-/// The color to use when painting ideographic baselines.
-Color debugPaintIdeographicBaselineColor = _kDebugPaintIdeographicBaselineColor;
-
 /// Causes each Layer to paint a box around its bounds.
 bool debugPaintLayerBordersEnabled = false;
-
-/// The color to use when painting Layer borders.
-Color debugPaintLayerBordersColor = _kDebugPaintLayerBordersColor;
 
 /// Causes objects like [RenderPointerListener] to flash while they are being
 /// tapped. This can be useful to see how large the hit box is, e.g. when
@@ -79,23 +39,63 @@ Color debugPaintLayerBordersColor = _kDebugPaintLayerBordersColor;
 /// [RenderBox.debugHandleEvent].
 bool debugPaintPointersEnabled = false;
 
-/// The color to use when reporting pointers for [debugPaintPointersEnabled].
-int debugPaintPointersColorValue = _kDebugPaintPointersColorValue;
-
 /// Overlay a rotating set of colors when repainting layers in checked mode.
+///
+/// See also:
+///
+///  * [RepaintBoundary], which can be used to contain repaints when unchanged
+///    areas are being excessively repainted.
 bool debugRepaintRainbowEnabled = false;
 
 /// Overlay a rotating set of colors when repainting text in checked mode.
 bool debugRepaintTextRainbowEnabled = false;
 
+/// Causes [PhysicalModelLayer]s to paint a red rectangle around themselves if
+/// they are overlapping and painted out of order with regard to their elevation.
+///
+/// Android and iOS will show the last painted layer on top, whereas Fuchsia
+/// will show the layer with the highest elevation on top.
+///
+/// For example, a rectangular elevation at 3.0 that is painted before an
+/// overlapping rectangular elevation at 2.0 would render this way on Android
+/// and iOS (with fake shadows):
+/// ```
+/// ┌───────────────────┐
+/// │                   │
+/// │      3.0          │
+/// │            ┌───────────────────┐
+/// │            │                   │
+/// └────────────│                   │
+///              │        2.0        │
+///              │                   │
+///              └───────────────────┘
+/// ```
+///
+/// But this way on Fuchsia (with real shadows):
+/// ```
+/// ┌───────────────────┐
+/// │                   │
+/// │      3.0          │
+/// │                   │────────────┐
+/// │                   │            │
+/// └───────────────────┘            │
+///              │         2.0       │
+///              │                   │
+///              └───────────────────┘
+/// ```
+///
+/// This check helps developers that want a consistent look and feel detect
+/// where this inconsistency would occur.
+bool debugCheckElevationsEnabled = false;
+
 /// The current color to overlay when repainting a layer.
-HSVColor debugCurrentRepaintColor = _kDebugCurrentRepaintColor;
-
-/// The amount to increment the hue of the current repaint color.
-double debugRepaintRainbowHueIncrement = _kDebugRepaintRainbowHueIncrement;
-
-/// Log the call stacks that mark render objects as needing paint.
-bool debugPrintMarkNeedsPaintStacks = false;
+///
+/// This is used by painting debug code that implements
+/// [debugRepaintRainbowEnabled] or [debugRepaintTextRainbowEnabled].
+///
+/// The value is incremented by [RenderView.compositeFrame] if either of those
+/// flags is enabled.
+HSVColor debugCurrentRepaintColor = _kDebugDefaultRepaintColor;
 
 /// Log the call stacks that mark render objects as needing layout.
 ///
@@ -104,6 +104,27 @@ bool debugPrintMarkNeedsPaintStacks = false;
 /// redundant stack traces as a single [RenderObject.markNeedsLayout] call walks
 /// up the tree.
 bool debugPrintMarkNeedsLayoutStacks = false;
+
+/// Log the call stacks that mark render objects as needing paint.
+bool debugPrintMarkNeedsPaintStacks = false;
+
+/// Log the dirty render objects that are laid out each frame.
+///
+/// Combined with [debugPrintBeginFrameBanner], this allows you to distinguish
+/// layouts triggered by the initial mounting of a render tree (e.g. in a call
+/// to [runApp]) from the regular layouts triggered by the pipeline.
+///
+/// Combined with [debugPrintMarkNeedsLayoutStacks], this lets you watch a
+/// render object's dirty/clean lifecycle.
+///
+/// See also:
+///
+///  * [debugProfilePaintsEnabled], which does something similar for
+///    painting but using the timeline view.
+///  * [debugPrintRebuildDirtyWidgets], which does something similar for widgets
+///    being rebuilt.
+///  * The discussion at [RendererBinding.drawFrame].
+bool debugPrintLayouts = false;
 
 /// Check the intrinsic sizes of each [RenderBox] during layout.
 ///
@@ -119,49 +140,102 @@ bool debugCheckIntrinsicSizes = false;
 ///
 /// For details on how to use [dart:developer.Timeline] events in the Dart
 /// Observatory to optimize your app, see:
-/// <https://fuchsia.googlesource.com/sysui/+/master/docs/performance.md>
+/// <https://fuchsia.googlesource.com/topaz/+/master/shell/docs/performance.md>
+///
+/// See also:
+///
+///  * [debugPrintLayouts], which does something similar for layout but using
+///    console output.
+///  * [debugProfileBuildsEnabled], which does something similar for widgets
+///    being rebuilt, and [debugPrintRebuildDirtyWidgets], its console
+///    equivalent.
+///  * The discussion at [RendererBinding.drawFrame].
+///  * [RepaintBoundary], which can be used to contain repaints when unchanged
+///    areas are being excessively repainted.
 bool debugProfilePaintsEnabled = false;
 
+/// Signature for [debugOnProfilePaint] implementations.
+typedef ProfilePaintCallback = void Function(RenderObject renderObject);
 
-/// Returns a list of strings representing the given transform in a format
-/// useful for [RenderObject.debugFillDescription].
+/// Callback invoked for every [RenderObject] painted each frame.
 ///
-/// If the argument is null, returns a list with the single string "null".
-List<String> debugDescribeTransform(Matrix4 transform) {
-  if (transform == null)
-    return const <String>['null'];
-  final List<String> matrix = transform.toString().split('\n').map((String s) => '  $s').toList();
-  matrix.removeLast();
-  return matrix;
-}
+/// This callback is only invoked in debug builds.
+///
+/// See also:
+///
+///  * [debugProfilePaintsEnabled], which does something similar but adds
+///    [dart:developer.Timeline] events instead of invoking a callback.
+///  * [debugOnRebuildDirtyWidget], which does something similar for widgets
+///    being built.
+///  * [WidgetInspectorService], which uses the [debugOnProfilePaint]
+///    callback to generate aggregate profile statistics describing what paints
+///    occurred when the `ext.flutter.inspector.trackRepaintWidgets` service
+///    extension is enabled.
+ProfilePaintCallback debugOnProfilePaint;
+
+/// Setting to true will cause all clipping effects from the layer tree to be
+/// ignored.
+///
+/// Can be used to debug whether objects being clipped are painting excessively
+/// in clipped areas. Can also be used to check whether excessive use of
+/// clipping is affecting performance.
+///
+/// This will not reduce the number of [Layer] objects created; the compositing
+/// strategy is unaffected. It merely causes the clipping layers to be skipped
+/// when building the scene.
+bool debugDisableClipLayers = false;
+
+/// Setting to true will cause all physical modeling effects from the layer
+/// tree, such as shadows from elevations, to be ignored.
+///
+/// Can be used to check whether excessive use of physical models is affecting
+/// performance.
+///
+/// This will not reduce the number of [Layer] objects created; the compositing
+/// strategy is unaffected. It merely causes the physical shape layers to be
+/// skipped when building the scene.
+bool debugDisablePhysicalShapeLayers = false;
+
+/// Setting to true will cause all opacity effects from the layer tree to be
+/// ignored.
+///
+/// An optimization to not paint the child at all when opacity is 0 will still
+/// remain.
+///
+/// Can be used to check whether excessive use of opacity effects is affecting
+/// performance.
+///
+/// This will not reduce the number of [Layer] objects created; the compositing
+/// strategy is unaffected. It merely causes the opacity layers to be skipped
+/// when building the scene.
+bool debugDisableOpacityLayers = false;
 
 void _debugDrawDoubleRect(Canvas canvas, Rect outerRect, Rect innerRect, Color color) {
-  final Path path = new Path()
+  final Path path = Path()
     ..fillType = PathFillType.evenOdd
     ..addRect(outerRect)
     ..addRect(innerRect);
-  final Paint paint = new Paint()
+  final Paint paint = Paint()
     ..color = color;
   canvas.drawPath(path, paint);
 }
 
-/// Paint padding using the [debugPaintPaddingColor],
-/// [debugPaintPaddingInnerEdgeColor], and [debugPaintSpacingColor] colors.
+/// Paint a diagram showing the given area as padding.
 ///
 /// Called by [RenderPadding.debugPaintSize] when [debugPaintSizeEnabled] is
 /// true.
-void debugPaintPadding(Canvas canvas, Rect outerRect, Rect innerRect, { double outlineWidth: 2.0 }) {
+void debugPaintPadding(Canvas canvas, Rect outerRect, Rect innerRect, { double outlineWidth = 2.0 }) {
   assert(() {
     if (innerRect != null && !innerRect.isEmpty) {
-      _debugDrawDoubleRect(canvas, outerRect, innerRect, debugPaintPaddingColor);
-      _debugDrawDoubleRect(canvas, innerRect.inflate(outlineWidth).intersect(outerRect), innerRect, debugPaintPaddingInnerEdgeColor);
+      _debugDrawDoubleRect(canvas, outerRect, innerRect, const Color(0x900090FF));
+      _debugDrawDoubleRect(canvas, innerRect.inflate(outlineWidth).intersect(outerRect), innerRect, const Color(0xFF0090FF));
     } else {
-      final Paint paint = new Paint()
-        ..color = debugPaintSpacingColor;
+      final Paint paint = Paint()
+        ..color = const Color(0x90909090);
       canvas.drawRect(outerRect, paint);
     }
     return true;
-  });
+  }());
 }
 
 /// Returns true if none of the rendering library debug variables have been changed.
@@ -169,13 +243,13 @@ void debugPaintPadding(Canvas canvas, Rect outerRect, Rect innerRect, { double o
 /// This function is used by the test framework to ensure that debug variables
 /// haven't been inadvertently changed.
 ///
-/// See <https://docs.flutter.io/flutter/rendering/rendering-library.html> for
-/// a complete list.
+/// See [the rendering library](rendering/rendering-library.html) for a complete
+/// list.
 ///
 /// The `debugCheckIntrinsicSizesOverride` argument can be provided to override
 /// the expected value for [debugCheckIntrinsicSizes]. (This exists because the
 /// test framework itself overrides this value in some cases.)
-bool debugAssertAllRenderVarsUnset(String reason, { bool debugCheckIntrinsicSizesOverride: false }) {
+bool debugAssertAllRenderVarsUnset(String reason, { bool debugCheckIntrinsicSizesOverride = false }) {
   assert(() {
     if (debugPaintSizeEnabled ||
         debugPaintBaselinesEnabled ||
@@ -183,25 +257,16 @@ bool debugAssertAllRenderVarsUnset(String reason, { bool debugCheckIntrinsicSize
         debugPaintPointersEnabled ||
         debugRepaintRainbowEnabled ||
         debugRepaintTextRainbowEnabled ||
-        debugPrintMarkNeedsPaintStacks ||
+        debugCurrentRepaintColor != _kDebugDefaultRepaintColor ||
         debugPrintMarkNeedsLayoutStacks ||
+        debugPrintMarkNeedsPaintStacks ||
+        debugPrintLayouts ||
         debugCheckIntrinsicSizes != debugCheckIntrinsicSizesOverride ||
         debugProfilePaintsEnabled ||
-        debugPaintSizeColor != _kDebugPaintSizeColor ||
-        debugPaintSpacingColor != _kDebugPaintSpacingColor ||
-        debugPaintPaddingColor != _kDebugPaintPaddingColor ||
-        debugPaintPaddingInnerEdgeColor != _kDebugPaintPaddingInnerEdgeColor ||
-        debugPaintBoxArrowColor != _kDebugPaintBoxArrowColor ||
-        debugPaintSliverArrowColor != _kDebugPaintSliverArrowColor ||
-        debugPaintAlphabeticBaselineColor != _kDebugPaintAlphabeticBaselineColor ||
-        debugPaintIdeographicBaselineColor != _kDebugPaintIdeographicBaselineColor ||
-        debugPaintLayerBordersColor != _kDebugPaintLayerBordersColor ||
-        debugPaintPointersColorValue != _kDebugPaintPointersColorValue ||
-        debugCurrentRepaintColor != _kDebugCurrentRepaintColor ||
-        debugRepaintRainbowHueIncrement != _kDebugRepaintRainbowHueIncrement) {
-      throw new FlutterError(reason);
+        debugOnProfilePaint != null) {
+      throw FlutterError(reason);
     }
     return true;
-  });
+  }());
   return true;
 }

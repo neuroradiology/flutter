@@ -1,4 +1,4 @@
-// Copyright 2017 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -7,22 +7,20 @@ import 'package:flutter/painting.dart';
 
 void main() {
   // Here and below, see: https://github.com/dart-lang/sdk/issues/26980
-  // ignore: prefer_const_constructors
-  final FlutterLogoDecoration start = new FlutterLogoDecoration(
-    lightColor: const Color(0xFF000000),
-    darkColor: const Color(0xFFFFFFFF),
-    textColor: const Color(0xFFD4F144),
+  const FlutterLogoDecoration start = FlutterLogoDecoration(
+    lightColor: Color(0xFF000000),
+    darkColor: Color(0xFFFFFFFF),
+    textColor: Color(0xFFD4F144),
     style: FlutterLogoStyle.stacked,
-    margin: const EdgeInsets.all(10.0),
+    margin: EdgeInsets.all(10.0),
   );
 
-  // ignore: prefer_const_constructors
-  final FlutterLogoDecoration end = new FlutterLogoDecoration(
-    lightColor: const Color(0xFFFFFFFF),
-    darkColor: const Color(0xFF000000),
-    textColor: const Color(0xFF81D4FA),
+  const FlutterLogoDecoration end = FlutterLogoDecoration(
+    lightColor: Color(0xFFFFFFFF),
+    darkColor: Color(0xFF000000),
+    textColor: Color(0xFF81D4FA),
     style: FlutterLogoStyle.stacked,
-    margin: const EdgeInsets.all(10.0),
+    margin: EdgeInsets.all(10.0),
   );
 
   test('FlutterLogoDecoration lerp from null to null is null', () {
@@ -56,11 +54,33 @@ void main() {
     expect(logo.margin, EdgeInsets.lerp(start.margin, end.margin, 0.5));
   });
 
+  test('FlutterLogoDecorationl.lerpFrom and FlutterLogoDecorationl.lerpTo', () {
+    expect(Decoration.lerp(start, const BoxDecoration(), 0.0), start);
+    expect(Decoration.lerp(start, const BoxDecoration(), 1.0), const BoxDecoration());
+    expect(Decoration.lerp(const BoxDecoration(), end, 0.0), const BoxDecoration());
+    expect(Decoration.lerp(const BoxDecoration(), end, 1.0), end);
+  });
+
   test('FlutterLogoDecoration lerp changes styles at 0.5', () {
     FlutterLogoDecoration logo = FlutterLogoDecoration.lerp(start, end, 0.4);
     expect(logo.style, start.style);
 
     logo = FlutterLogoDecoration.lerp(start, end, 0.5);
     expect(logo.style, end.style);
+  });
+
+  test('FlutterLogoDecoration toString', () {
+    expect(
+      start.toString(),
+      equals(
+        'FlutterLogoDecoration(Color(0xff000000)/Color(0xffffffff) on Color(0xffd4f144), style: stacked)'
+      ),
+    );
+    expect(
+      FlutterLogoDecoration.lerp(null, end, 0.5).toString(),
+      equals(
+        'FlutterLogoDecoration(Color(0xffffffff)/Color(0xff000000) on Color(0xff81d4fa), style: stacked, transition -1.0:0.5)',
+      ),
+    );
   });
 }

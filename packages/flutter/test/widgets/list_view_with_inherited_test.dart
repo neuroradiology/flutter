@@ -1,4 +1,4 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -10,19 +10,22 @@ List<int> items = <int>[0, 1, 2, 3, 4, 5];
 Widget buildCard(BuildContext context, int index) {
   if (index >= items.length)
     return null;
-  return new Container(
-    key: new ValueKey<int>(items[index]),
+  return Container(
+    key: ValueKey<int>(items[index]),
     height: 100.0,
-    child: new DefaultTextStyle(
-      style: new TextStyle(fontSize: 2.0 + items.length.toDouble()),
-      child: new Text('${items[index]}')
-    )
+    child: DefaultTextStyle(
+      style: TextStyle(fontSize: 2.0 + items.length.toDouble()),
+      child: Text('${items[index]}', textDirection: TextDirection.ltr),
+    ),
   );
 }
 
 Widget buildFrame() {
-  return new ListView.builder(
-    itemBuilder: buildCard,
+  return Directionality(
+    textDirection: TextDirection.ltr,
+    child: ListView.builder(
+      itemBuilder: buildCard,
+    ),
   );
 }
 

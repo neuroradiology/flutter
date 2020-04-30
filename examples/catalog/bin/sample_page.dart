@@ -1,4 +1,4 @@
-// Copyright 2017 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -18,7 +18,7 @@ class SampleError extends Error {
 
 // Sample apps are .dart files in the lib directory which contain a block
 // comment that begins with a '/* Sample Catalog' line, and ends with a line
-// that just  contains '*/'. The following keywords may appear at the
+// that just contains '*/'. The following keywords may appear at the
 // beginning of lines within the comment. A keyword's value is all of
 // the following text up to the next keyword or the end of the comment,
 // sans leading and trailing whitespace.
@@ -28,46 +28,36 @@ Directory outputDirectory;
 Directory sampleDirectory;
 Directory testDirectory;
 Directory driverDirectory;
-String sampleTemplate;
-String screenshotTemplate;
-String screenshotDriverTemplate;
 
 void logMessage(String s) { print(s); }
 void logError(String s) { print(s); }
 
 File inputFile(String dir, String name) {
-  return new File(dir + Platform.pathSeparator + name);
+  return File(dir + Platform.pathSeparator + name);
 }
 
 File outputFile(String name, [Directory directory]) {
-  return new File((directory ?? outputDirectory).path + Platform.pathSeparator + name);
+  return File((directory ?? outputDirectory).path + Platform.pathSeparator + name);
 }
 
 void initialize() {
-  final File sampleTemplateFile = inputFile('bin', 'sample_page.md.template');
-  final File screenshotTemplateFile = inputFile('bin', 'screenshot.dart.template');
-  final File screenshotDriverTemplateFile = inputFile('bin', 'screenshot_test.dart.template');
-
-  outputDirectory = new Directory('.generated');
-  sampleDirectory = new Directory('lib');
-  testDirectory = new Directory('test');
-  driverDirectory = new Directory('test_driver');
+  outputDirectory = Directory('.generated');
+  sampleDirectory = Directory('lib');
+  testDirectory = Directory('test');
+  driverDirectory = Directory('test_driver');
   outputDirectory.createSync();
-  sampleTemplate = sampleTemplateFile.readAsStringSync();
-  screenshotTemplate = screenshotTemplateFile.readAsStringSync();
-  screenshotDriverTemplate = screenshotDriverTemplateFile.readAsStringSync();
 }
 
 // Return a copy of template with each occurrence of @(foo) replaced
 // by values[foo].
 String expandTemplate(String template, Map<String, String> values) {
   // Matches @(foo), match[1] == 'foo'
-  final RegExp tokenRE = new RegExp(r'@\(([\w ]+)\)', multiLine: true);
+  final RegExp tokenRE = RegExp(r'@\(([\w ]+)\)', multiLine: true);
   return template.replaceAllMapped(tokenRE, (Match match) {
     if (match.groupCount != 1)
-      throw new SampleError('bad template keyword $match[0]');
+      throw SampleError('bad template keyword $match[0]');
     final String keyword = match[1];
-    return (values[keyword] ?? "");
+    return values[keyword] ?? '';
   });
 }
 
@@ -76,10 +66,11 @@ void writeExpandedTemplate(File output, String template, Map<String, String> val
   logMessage('wrote $output');
 }
 
-class SampleGenerator {
-  SampleGenerator(this.sourceFile);
+class SampleInfo {
+  SampleInfo(this.sourceFile, this.commit);
 
   final File sourceFile;
+  final String commit;
   String sourceCode;
   Map<String, String> commentValues;
 
@@ -87,8 +78,19 @@ class SampleGenerator {
   // is used to create derived filenames like foo.md or foo.png.
   String get sourceName => basenameWithoutExtension(sourceFile.path);
 
+  // The website's link to this page will be /catalog/samples/@(link)/.
+  String get link => sourceName.replaceAll('_', '-');
+
   // The name of the widget class that defines this sample app, like 'FooSample'.
-  String get sampleClass => commentValues["sample"];
+  String get sampleClass => commentValues['sample'];
+
+  // The value of the 'Classes:' comment as a list of class names.
+  Iterable<String> get highlightedClasses {
+    final String classNames = commentValues['classes'];
+    if (classNames == null)
+      return const <String>[];
+    return classNames.split(',').map<String>((String s) => s.trim()).where((String s) => s.isNotEmpty);
+  }
 
   // The relative import path for this sample, like '../lib/foo.dart'.
   String get importPath => '..' + Platform.pathSeparator + sourceFile.path;
@@ -100,8 +102,8 @@ class SampleGenerator {
   bool initialize() {
     final String contents = sourceFile.readAsStringSync();
 
-    final RegExp startRE = new RegExp(r'^/\*\s+^Sample\s+Catalog', multiLine: true);
-    final RegExp endRE = new RegExp(r'^\*/', multiLine: true);
+    final RegExp startRE = RegExp(r'^/\*\s+^Sample\s+Catalog', multiLine: true);
+    final RegExp endRE = RegExp(r'^\*/', multiLine: true);
     final Match startMatch = startRE.firstMatch(contents);
     if (startMatch == null)
       return false;
@@ -114,12 +116,12 @@ class SampleGenerator {
     final String comment = contents.substring(startIndex, startIndex + endMatch.start);
     sourceCode = contents.substring(0, startMatch.start) + contents.substring(startIndex + endMatch.end);
     if (sourceCode.trim().isEmpty)
-      throw new SampleError('did not find any source code in $sourceFile');
+      throw SampleError('did not find any source code in $sourceFile');
 
-    final RegExp keywordsRE = new RegExp(sampleCatalogKeywords, multiLine: true);
+    final RegExp keywordsRE = RegExp(sampleCatalogKeywords, multiLine: true);
     final List<Match> keywordMatches = keywordsRE.allMatches(comment).toList();
     if (keywordMatches.isEmpty)
-      throw new SampleError('did not find any keywords in the Sample Catalog comment in $sourceFile');
+      throw SampleError('did not find any keywords in the Sample Catalog comment in $sourceFile');
 
     commentValues = <String, String>{};
     for (int i = 0; i < keywordMatches.length; i += 1) {
@@ -133,64 +135,123 @@ class SampleGenerator {
     commentValues['name'] = sourceName;
     commentValues['path'] = 'examples/catalog/${sourceFile.path}';
     commentValues['source'] = sourceCode.trim();
+    commentValues['link'] = link;
+    commentValues['android screenshot'] = 'https://storage.googleapis.com/flutter-catalog/$commit/${sourceName}_small.png';
 
     return true;
   }
 }
 
-void generate() {
+void generate(String commit) {
   initialize();
 
-  final List<SampleGenerator> samples = <SampleGenerator>[];
-  sampleDirectory.listSync().forEach((FileSystemEntity entity) {
+  final List<SampleInfo> samples = <SampleInfo>[];
+  for (final FileSystemEntity entity in sampleDirectory.listSync()) {
     if (entity is File && entity.path.endsWith('.dart')) {
-      final SampleGenerator sample = new SampleGenerator(entity);
-      if (sample.initialize()) { // skip files that lack the Sample Catalog comment
-        writeExpandedTemplate(
-          outputFile(sample.sourceName + '.md'),
-          sampleTemplate,
-          sample.commentValues,
-        );
+      final SampleInfo sample = SampleInfo(entity, commit);
+      if (sample.initialize()) // skip files that lack the Sample Catalog comment
         samples.add(sample);
-      }
     }
-  });
+  }
 
   // Causes the generated imports to appear in alphabetical order.
   // Avoid complaints from flutter lint.
-  samples.sort((SampleGenerator a, SampleGenerator b) {
+  samples.sort((SampleInfo a, SampleInfo b) {
     return a.sourceName.compareTo(b.sourceName);
   });
 
+  final String entryTemplate = inputFile('bin', 'entry.md.template').readAsStringSync();
+
+  // Write the sample catalog's home page: index.md
+  final Iterable<String> entries = samples.map<String>((SampleInfo sample) {
+    return expandTemplate(entryTemplate, sample.commentValues);
+  });
+  writeExpandedTemplate(
+    outputFile('index.md'),
+    inputFile('bin', 'index.md.template').readAsStringSync(),
+    <String, String>{
+      'entries': entries.join('\n'),
+    },
+  );
+
+  // Write the sample app files, like animated_list.md
+  for (final SampleInfo sample in samples) {
+    writeExpandedTemplate(
+      outputFile(sample.sourceName + '.md'),
+      inputFile('bin', 'sample_page.md.template').readAsStringSync(),
+      sample.commentValues,
+    );
+  }
+
+  // For each unique class listened in a sample app's "Classes:" list, generate
+  // a file that's structurally the same as index.md but only contains samples
+  // that feature one class. For example AnimatedList_index.md would only
+  // include samples that had AnimatedList in their "Classes:" list.
+  final Map<String, List<SampleInfo>> classToSamples = <String, List<SampleInfo>>{};
+  for (final SampleInfo sample in samples) {
+    for (final String className in sample.highlightedClasses) {
+      classToSamples[className] ??= <SampleInfo>[];
+      classToSamples[className].add(sample);
+    }
+  }
+  for (final String className in classToSamples.keys) {
+    final Iterable<String> entries = classToSamples[className].map<String>((SampleInfo sample) {
+      return expandTemplate(entryTemplate, sample.commentValues);
+    });
+    writeExpandedTemplate(
+      outputFile('${className}_index.md'),
+      inputFile('bin', 'class_index.md.template').readAsStringSync(),
+      <String, String>{
+        'class': className,
+        'entries': entries.join('\n'),
+        'link': '${className}_index',
+      },
+    );
+  }
+
+  // Write screenshot.dart, a "test" app that displays each sample
+  // app in turn when the app is tapped.
   writeExpandedTemplate(
     outputFile('screenshot.dart', driverDirectory),
-    screenshotTemplate,
+    inputFile('bin', 'screenshot.dart.template').readAsStringSync(),
     <String, String>{
-      'imports': samples.map((SampleGenerator page) {
+      'imports': samples.map<String>((SampleInfo page) {
         return "import '${page.importPath}' show ${page.sampleClass};\n";
-      }).toList().join(),
-      'widgets': samples.map((SampleGenerator sample) {
+      }).join(),
+      'widgets': samples.map<String>((SampleInfo sample) {
         return 'new ${sample.sampleClass}(),\n';
-      }).toList().join(),
+      }).join(),
     },
   );
 
+  // Write screenshot_test.dart, a test driver for screenshot.dart
+  // that collects screenshots of each app and saves them.
   writeExpandedTemplate(
     outputFile('screenshot_test.dart', driverDirectory),
-    screenshotDriverTemplate,
+    inputFile('bin', 'screenshot_test.dart.template').readAsStringSync(),
     <String, String>{
-      'paths': samples.map((SampleGenerator sample) {
+      'paths': samples.map<String>((SampleInfo sample) {
         return "'${outputFile(sample.sourceName + '.png').path}'";
-      }).toList().join(',\n'),
+      }).join(',\n'),
     },
   );
 
-  // To generate the screenshots: flutter drive test_driver/screenshot.dart
+  // For now, the website's index.json file must be updated by hand.
+  logMessage('The following entries must appear in _data/catalog/widgets.json');
+  for (final String className in classToSamples.keys)
+    logMessage('"sample": "${className}_index"');
 }
 
 void main(List<String> args) {
+  if (args.length != 1) {
+    logError(
+      'Usage (cd examples/catalog/; dart bin/sample_page.dart commit)\n'
+      'The flutter commit hash locates screenshots on storage.googleapis.com/flutter-catalog/'
+    );
+    exit(255);
+  }
   try {
-    generate();
+    generate(args[0]);
   } catch (error) {
     logError(
       'Error: sample_page.dart failed: $error\n'
@@ -199,6 +260,5 @@ void main(List<String> args) {
     );
     exit(255);
   }
-
   exit(0);
 }

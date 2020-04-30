@@ -1,270 +1,290 @@
-// Copyright 2016 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'dart:collection';
+import 'dart:async';
+import 'dart:math' as math;
 
-import 'package:analyzer/error/error.dart';
-import 'package:analyzer/file_system/file_system.dart' as file_system;
-import 'package:analyzer/file_system/physical_file_system.dart';
-import 'package:analyzer/source/analysis_options_provider.dart';
-import 'package:analyzer/source/error_processor.dart';
-import 'package:analyzer/source/package_map_resolver.dart';
-import 'package:analyzer/src/context/builder.dart'; // ignore: implementation_imports
-import 'package:analyzer/src/dart/sdk/sdk.dart'; // ignore: implementation_imports
-import 'package:analyzer/src/generated/engine.dart'; // ignore: implementation_imports
-import 'package:analyzer/src/generated/java_io.dart'; // ignore: implementation_imports
-import 'package:analyzer/src/generated/source.dart'; // ignore: implementation_imports
-import 'package:analyzer/src/generated/source_io.dart'; // ignore: implementation_imports
-import 'package:analyzer/src/task/options.dart'; // ignore: implementation_imports
-import 'package:linter/src/rules.dart' as linter; // ignore: implementation_imports
-import 'package:cli_util/cli_util.dart' as cli_util;
-import 'package:package_config/packages.dart' show Packages;
-import 'package:package_config/src/packages_impl.dart' show MapPackages; // ignore: implementation_imports
-import 'package:plugin/manager.dart';
-import 'package:plugin/plugin.dart';
+import 'package:meta/meta.dart';
+import 'package:platform/platform.dart';
+import 'package:process/process.dart';
 
-import '../base/file_system.dart' hide IOSink;
+import '../base/common.dart';
+import '../base/file_system.dart';
 import '../base/io.dart';
+import '../base/logger.dart';
+import '../base/terminal.dart';
+import '../base/utils.dart';
+import '../convert.dart';
 
-class AnalysisDriver {
-  AnalysisDriver(this.options) {
-    AnalysisEngine.instance.logger =
-        new _StdLogger(outSink: options.outSink, errorSink: options.errorSink);
-    _processPlugins();
+/// An interface to the Dart analysis server.
+class AnalysisServer {
+  AnalysisServer(this.sdkPath, this.directories, {
+    @required FileSystem fileSystem,
+    @required ProcessManager processManager,
+    @required Logger logger,
+    @required Platform platform,
+    @required Terminal terminal,
+    @required List<String> experiments,
+  }) : _fileSystem = fileSystem,
+       _processManager = processManager,
+       _logger = logger,
+       _platform = platform,
+       _terminal = terminal,
+       _experiments = experiments;
+
+  final String sdkPath;
+  final List<String> directories;
+  final FileSystem _fileSystem;
+  final ProcessManager _processManager;
+  final Logger _logger;
+  final Platform _platform;
+  final Terminal _terminal;
+  final List<String> _experiments;
+
+  Process _process;
+  final StreamController<bool> _analyzingController =
+      StreamController<bool>.broadcast();
+  final StreamController<FileAnalysisErrors> _errorsController =
+      StreamController<FileAnalysisErrors>.broadcast();
+  bool _didServerErrorOccur = false;
+
+  int _id = 0;
+
+  Future<void> start() async {
+    final String snapshot = _fileSystem.path.join(
+      sdkPath,
+      'bin',
+      'snapshots',
+      'analysis_server.dart.snapshot',
+    );
+    final List<String> command = <String>[
+      _fileSystem.path.join(sdkPath, 'bin', 'dart'),
+      snapshot,
+      for (String experiment in _experiments)
+        ...<String>[
+          '--enable-experiment',
+          experiment,
+        ],
+      '--disable-server-feature-completion',
+      '--disable-server-feature-search',
+      '--sdk',
+      sdkPath,
+    ];
+
+    _logger.printTrace('dart ${command.skip(1).join(' ')}');
+    _process = await _processManager.start(command);
+    // This callback hookup can't throw.
+    unawaited(_process.exitCode.whenComplete(() => _process = null));
+
+    final Stream<String> errorStream =
+        _process.stderr.transform<String>(utf8.decoder).transform<String>(const LineSplitter());
+    errorStream.listen(_logger.printError);
+
+    final Stream<String> inStream =
+        _process.stdout.transform<String>(utf8.decoder).transform<String>(const LineSplitter());
+    inStream.listen(_handleServerResponse);
+
+    _sendCommand('server.setSubscriptions', <String, dynamic>{
+      'subscriptions': <String>['STATUS'],
+    });
+
+    _sendCommand('analysis.setAnalysisRoots',
+        <String, dynamic>{'included': directories, 'excluded': <String>[]});
   }
 
-  final Set<Source> _analyzedSources = new HashSet<Source>();
+  bool get didServerErrorOccur => _didServerErrorOccur;
+  Stream<bool> get onAnalyzing => _analyzingController.stream;
+  Stream<FileAnalysisErrors> get onErrors => _errorsController.stream;
 
-  AnalysisOptionsProvider analysisOptionsProvider =
-      new AnalysisOptionsProvider();
+  Future<int> get onExit => _process.exitCode;
 
-  file_system.ResourceProvider resourceProvider = PhysicalResourceProvider.INSTANCE;
-
-  AnalysisContext context;
-
-  DriverOptions options;
-
-  String get sdkDir {
-    return options.dartSdkPath ?? fs.path.absolute(cli_util.getSdkDir().path);
+  void _sendCommand(String method, Map<String, dynamic> params) {
+    final String message = json.encode(<String, dynamic>{
+      'id': (++_id).toString(),
+      'method': method,
+      'params': params,
+    });
+    _process.stdin.writeln(message);
+    _logger.printTrace('==> $message');
   }
 
-  List<AnalysisErrorDescription> analyze(Iterable<File> files) {
-    final List<AnalysisErrorInfo> infos = _analyze(files);
-    final List<AnalysisErrorDescription> errors = <AnalysisErrorDescription>[];
-    for (AnalysisErrorInfo info in infos) {
-      for (AnalysisError error in info.errors) {
-        if (!_isFiltered(error))
-          errors.add(new AnalysisErrorDescription(error, info.lineInfo));
+  void _handleServerResponse(String line) {
+    _logger.printTrace('<== $line');
+
+    final dynamic response = json.decode(line);
+
+    if (response is Map<String, dynamic>) {
+      if (response['event'] != null) {
+        final String event = response['event'] as String;
+        final dynamic params = response['params'];
+
+        if (params is Map<String, dynamic>) {
+          if (event == 'server.status') {
+            _handleStatus(castStringKeyedMap(response['params']));
+          } else if (event == 'analysis.errors') {
+            _handleAnalysisIssues(castStringKeyedMap(response['params']));
+          } else if (event == 'server.error') {
+            _handleServerError(castStringKeyedMap(response['params']));
+          }
+        }
+      } else if (response['error'] != null) {
+        // Fields are 'code', 'message', and 'stackTrace'.
+        final Map<String, dynamic> error = castStringKeyedMap(response['error']);
+        _logger.printError(
+            'Error response from the server: ${error['code']} ${error['message']}');
+        if (error['stackTrace'] != null) {
+          _logger.printError(error['stackTrace'] as String);
+        }
       }
     }
-    return errors;
   }
 
-  List<AnalysisErrorInfo> _analyze(Iterable<File> files) {
-    context = AnalysisEngine.instance.createAnalysisContext();
-    _processAnalysisOptions();
-    context.analysisOptions = options;
-    final PackageInfo packageInfo = new PackageInfo(options.packageMap);
-    final List<UriResolver> resolvers = _getResolvers(context, packageInfo.asMap());
-    context.sourceFactory =
-        new SourceFactory(resolvers, packageInfo.asPackages());
-
-    final List<Source> sources = <Source>[];
-    final ChangeSet changeSet = new ChangeSet();
-    for (File file in files) {
-      final JavaFile sourceFile = new JavaFile(fs.path.normalize(file.absolute.path));
-      Source source = new FileBasedSource(sourceFile, sourceFile.toURI());
-      final Uri uri = context.sourceFactory.restoreUri(source);
-      if (uri != null) {
-        source = new FileBasedSource(sourceFile, uri);
-      }
-      sources.add(source);
-      changeSet.addedSource(source);
+  void _handleStatus(Map<String, dynamic> statusInfo) {
+    // {"event":"server.status","params":{"analysis":{"isAnalyzing":true}}}
+    if (statusInfo['analysis'] != null && !_analyzingController.isClosed) {
+      final bool isAnalyzing = statusInfo['analysis']['isAnalyzing'] as bool;
+      _analyzingController.add(isAnalyzing);
     }
-    context.applyChanges(changeSet);
-
-    final List<AnalysisErrorInfo> infos = <AnalysisErrorInfo>[];
-    for (Source source in sources) {
-      context.computeErrors(source);
-      infos.add(context.getErrors(source));
-      _analyzedSources.add(source);
-    }
-
-    return infos;
   }
 
-  List<UriResolver> _getResolvers(InternalAnalysisContext context,
-      Map<String, List<file_system.Folder>> packageMap) {
+  void _handleServerError(Map<String, dynamic> error) {
+    // Fields are 'isFatal', 'message', and 'stackTrace'.
+    _logger.printError('Error from the analysis server: ${error['message']}');
+    if (error['stackTrace'] != null) {
+      _logger.printError(error['stackTrace'] as String);
+    }
+    _didServerErrorOccur = true;
+  }
 
-    // Create our list of resolvers.
-    final List<UriResolver> resolvers = <UriResolver>[];
+  void _handleAnalysisIssues(Map<String, dynamic> issueInfo) {
+    // {"event":"analysis.errors","params":{"file":"/Users/.../lib/main.dart","errors":[]}}
+    final String file = issueInfo['file'] as String;
+    final List<dynamic> errorsList = issueInfo['errors'] as List<dynamic>;
+    final List<AnalysisError> errors = errorsList
+        .map<Map<String, dynamic>>(castStringKeyedMap)
+        .map<AnalysisError>((Map<String, dynamic> json) {
+          return AnalysisError(json,
+            fileSystem: _fileSystem,
+            platform: _platform,
+            terminal: _terminal,
+          );
+        })
+        .toList();
+    if (!_errorsController.isClosed) {
+      _errorsController.add(FileAnalysisErrors(file, errors));
+    }
+  }
 
-    // Look for an embedder.
-    final EmbedderYamlLocator locator = new EmbedderYamlLocator(packageMap);
-    if (locator.embedderYamls.isNotEmpty) {
-      // Create and configure an embedded SDK.
-      final EmbedderSdk sdk = new EmbedderSdk(PhysicalResourceProvider.INSTANCE, locator.embedderYamls);
-      // Fail fast if no URI mappings are found.
-      assert(sdk.libraryMap.size() > 0);
-      sdk.analysisOptions = context.analysisOptions;
+  Future<bool> dispose() async {
+    await _analyzingController.close();
+    await _errorsController.close();
+    return _process?.kill();
+  }
+}
 
-      resolvers.add(new DartUriResolver(sdk));
+enum _AnalysisSeverity {
+  error,
+  warning,
+  info,
+  none,
+}
+
+class AnalysisError implements Comparable<AnalysisError> {
+  AnalysisError(this.json, {
+    @required Platform platform,
+    @required Terminal terminal,
+    @required FileSystem fileSystem,
+  }) : _platform = platform,
+       _terminal = terminal,
+       _fileSystem = fileSystem;
+
+  final Platform _platform;
+  final Terminal _terminal;
+  final FileSystem _fileSystem;
+
+  static final Map<String, _AnalysisSeverity> _severityMap = <String, _AnalysisSeverity>{
+    'INFO': _AnalysisSeverity.info,
+    'WARNING': _AnalysisSeverity.warning,
+    'ERROR': _AnalysisSeverity.error,
+  };
+
+  String  get _separator => _platform.isWindows ? '-' : '•';
+
+  // "severity":"INFO","type":"TODO","location":{
+  //   "file":"/Users/.../lib/test.dart","offset":362,"length":72,"startLine":15,"startColumn":4
+  // },"message":"...","hasFix":false}
+  Map<String, dynamic> json;
+
+  String get severity => json['severity'] as String;
+  String get colorSeverity {
+    switch(_severityLevel) {
+      case _AnalysisSeverity.error:
+        return _terminal.color(severity, TerminalColor.red);
+      case _AnalysisSeverity.warning:
+        return _terminal.color(severity, TerminalColor.yellow);
+      case _AnalysisSeverity.info:
+      case _AnalysisSeverity.none:
+        return severity;
+    }
+    return null;
+  }
+  _AnalysisSeverity get _severityLevel => _severityMap[severity] ?? _AnalysisSeverity.none;
+  String get type => json['type'] as String;
+  String get message => json['message'] as String;
+  String get code => json['code'] as String;
+
+  String get file => json['location']['file'] as String;
+  int get startLine => json['location']['startLine'] as int;
+  int get startColumn => json['location']['startColumn'] as int;
+  int get offset => json['location']['offset'] as int;
+
+  String get messageSentenceFragment {
+    if (message.endsWith('.')) {
+      return message.substring(0, message.length - 1);
     } else {
-      // Fall back to a standard SDK if no embedder is found.
-      final FolderBasedDartSdk sdk = new FolderBasedDartSdk(resourceProvider,
-          PhysicalResourceProvider.INSTANCE.getFolder(sdkDir));
-      sdk.analysisOptions = context.analysisOptions;
-
-      resolvers.add(new DartUriResolver(sdk));
-    }
-
-    if (options.packageRootPath != null) {
-      final ContextBuilderOptions builderOptions = new ContextBuilderOptions();
-      builderOptions.defaultPackagesDirectoryPath = options.packageRootPath;
-      final ContextBuilder builder = new ContextBuilder(resourceProvider, null, null,
-          options: builderOptions);
-      final PackageMapUriResolver packageUriResolver = new PackageMapUriResolver(resourceProvider,
-          builder.convertPackagesToMap(builder.createPackageMap('')));
-
-      resolvers.add(packageUriResolver);
-    }
-
-    resolvers.add(new file_system.ResourceUriResolver(resourceProvider));
-    return resolvers;
-  }
-
-  bool _isFiltered(AnalysisError error) {
-    final ErrorProcessor processor = ErrorProcessor.getProcessor(context.analysisOptions, error);
-    // Filtered errors are processed to a severity of null.
-    return processor != null && processor.severity == null;
-  }
-
-  void _processAnalysisOptions() {
-    final String optionsPath = options.analysisOptionsFile;
-    if (optionsPath != null) {
-      final file_system.File file =
-           PhysicalResourceProvider.INSTANCE.getFile(optionsPath);
-      final Map<Object, Object> optionMap =
-          analysisOptionsProvider.getOptionsFromFile(file);
-      if (optionMap != null)
-        applyToAnalysisOptions(options, optionMap);
+      return message;
     }
   }
-
-  void _processPlugins() {
-    final List<Plugin> plugins = <Plugin>[];
-    plugins.addAll(AnalysisEngine.instance.requiredPlugins);
-    final ExtensionManager manager = new ExtensionManager();
-    manager.processPlugins(plugins);
-    linter.registerLintRules();
-  }
-}
-
-class AnalysisDriverException implements Exception {
-  AnalysisDriverException([this.message]);
-
-  final String message;
 
   @override
-  String toString() => message == null ? 'Exception' : 'Exception: $message';
-}
-
-class AnalysisErrorDescription {
-  AnalysisErrorDescription(this.error, this.line);
-
-  static Directory cwd = fs.currentDirectory.absolute;
-
-  final AnalysisError error;
-  final LineInfo line;
-
-  ErrorCode get errorCode => error.errorCode;
-
-  String get errorType {
-    final ErrorSeverity severity = errorCode.errorSeverity;
-    if (severity == ErrorSeverity.INFO) {
-      if (errorCode.type == ErrorType.HINT || errorCode.type == ErrorType.LINT)
-        return errorCode.type.displayName;
+  int compareTo(AnalysisError other) {
+    // Sort in order of file path, error location, severity, and message.
+    if (file != other.file) {
+      return file.compareTo(other.file);
     }
-    return severity.displayName;
-  }
 
-  LineInfo_Location get location => line.getLocation(error.offset);
-
-  String get path => _shorten(cwd.path, error.source.fullName);
-
-  Source get source => error.source;
-
-  String asString() => '[$errorType] ${error.message} ($path, '
-      'line ${location.lineNumber}, col ${location.columnNumber})';
-
-  static String _shorten(String root, String path) =>
-      path.startsWith(root) ? path.substring(root.length + 1) : path;
-}
-
-class DriverOptions extends AnalysisOptionsImpl {
-  DriverOptions() {
-    // Set defaults.
-    lint = true;
-    generateSdkErrors = false;
-    trackCacheDependencies = false;
-  }
-
-  /// The path to the dart SDK.
-  String dartSdkPath;
-
-  /// Map of packages to folder paths.
-  Map<String, String> packageMap;
-
-  /// The path to the package root.
-  String packageRootPath;
-
-  /// The path to analysis options.
-  String analysisOptionsFile;
-
-  /// Out sink for logging.
-  IOSink outSink = stdout;
-
-  /// Error sink for logging.
-  IOSink errorSink = stderr;
-}
-
-class PackageInfo {
-  PackageInfo(Map<String, String> packageMap) {
-    final Map<String, Uri> packages = new HashMap<String, Uri>();
-    for (String package in packageMap.keys) {
-      final String path = packageMap[package];
-      packages[package] = new Uri.directory(path);
-      _map[package] = <file_system.Folder>[
-        PhysicalResourceProvider.INSTANCE.getFolder(path)
-      ];
+    if (offset != other.offset) {
+      return offset - other.offset;
     }
-    _packages = new MapPackages(packages);
+
+    final int diff = other._severityLevel.index - _severityLevel.index;
+    if (diff != 0) {
+      return diff;
+    }
+
+    return message.compareTo(other.message);
   }
-
-  Packages _packages;
-
-  Map<String, List<file_system.Folder>> asMap() => _map;
-  final HashMap<String, List<file_system.Folder>> _map =
-      new HashMap<String, List<file_system.Folder>>();
-
-  Packages asPackages() => _packages;
-}
-
-class _StdLogger extends Logger {
-  _StdLogger({this.outSink, this.errorSink});
-
-  final IOSink outSink;
-  final IOSink errorSink;
 
   @override
-  void logError(String message, [Exception exception]) =>
-      errorSink.writeln(message);
-
-  @override
-  void logInformation(String message, [Exception exception]) {
-    // TODO(pq): remove once addressed in analyzer (http://dartbug.com/28285)
-    if (message != 'No definition of type FutureOr')
-      outSink.writeln(message);
+  String toString() {
+    // Can't use "padLeft" because of ANSI color sequences in the colorized
+    // severity.
+    final String padding = ' ' * math.max(0, 7 - severity.length);
+    return '$padding${colorSeverity.toLowerCase()} $_separator '
+        '$messageSentenceFragment $_separator '
+        '${_fileSystem.path.relative(file)}:$startLine:$startColumn $_separator '
+        '$code';
   }
+
+  String toLegacyString() {
+    return '[${severity.toLowerCase()}] $messageSentenceFragment ($file:$startLine:$startColumn)';
+  }
+}
+
+class FileAnalysisErrors {
+  FileAnalysisErrors(this.file, this.errors);
+
+  final String file;
+  final List<AnalysisError> errors;
 }

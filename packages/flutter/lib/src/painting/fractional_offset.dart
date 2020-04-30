@@ -1,4 +1,4 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -6,6 +6,7 @@ import 'dart:ui' as ui show lerpDouble;
 
 import 'package:flutter/foundation.dart';
 
+import 'alignment.dart';
 import 'basic_types.dart';
 
 /// An offset that's expressed as a fraction of a [Size].
@@ -17,29 +18,60 @@ import 'basic_types.dart';
 /// `FractionalOffset(0.5, 2.0)` represents a point half way across the [Size],
 /// below the bottom of the rectangle by the height of the [Size].
 ///
-/// A variety of widgets use [FractionalOffset] in their configuration, most
-/// notably:
+/// The [FractionalOffset] class specifies offsets in terms of a distance from
+/// the top left, regardless of the [TextDirection].
 ///
-///  * [Align] positions a child according to a [FractionalOffset].
-///  * [FractionalTranslation] moves a child according to a [FractionalOffset].
+/// ## Design discussion
+///
+/// [FractionalOffset] and [Alignment] are two different representations of the
+/// same information: the location within a rectangle relative to the size of
+/// the rectangle. The difference between the two classes is in the coordinate
+/// system they use to represent the location.
+///
+/// [FractionalOffset] uses a coordinate system with an origin in the top-left
+/// corner of the rectangle whereas [Alignment] uses a coordinate system with an
+/// origin in the center of the rectangle.
+///
+/// Historically, [FractionalOffset] predates [Alignment]. When we attempted to
+/// make a version of [FractionalOffset] that adapted to the [TextDirection], we
+/// ran into difficulty because placing the origin in the top-left corner
+/// introduced a left-to-right bias that was hard to remove.
+///
+/// By placing the origin in the center, [Alignment] and [AlignmentDirectional]
+/// are able to use the same origin, which means we can use a linear function to
+/// resolve an [AlignmentDirectional] into an [Alignment] in both
+/// [TextDirection.rtl] and [TextDirection.ltr].
+///
+/// [Alignment] is better for most purposes than [FractionalOffset] and should
+/// be used instead of [FractionalOffset]. We continue to implement
+/// [FractionalOffset] to support code that predates [Alignment].
+///
+/// See also:
+///
+///  * [Alignment], which uses a coordinate system based on the center of the
+///    rectangle instead of the top left corner of the rectangle.
 @immutable
-class FractionalOffset {
+class FractionalOffset extends Alignment {
   /// Creates a fractional offset.
   ///
   /// The [dx] and [dy] arguments must not be null.
-  const FractionalOffset(this.dx, this.dy)
+  const FractionalOffset(double dx, double dy)
     : assert(dx != null),
-      assert(dy != null);
+      assert(dy != null),
+      super(dx * 2.0 - 1.0, dy * 2.0 - 1.0);
 
   /// Creates a fractional offset from a specific offset and size.
   ///
   /// The returned [FractionalOffset] describes the position of the
   /// [Offset] in the [Size], as a fraction of the [Size].
-  FractionalOffset.fromOffsetAndSize(Offset offset, Size size) :
-    assert(size != null),
-    assert(offset != null),
-    dx = offset.dx / size.width,
-    dy = offset.dy / size.height;
+  factory FractionalOffset.fromOffsetAndSize(Offset offset, Size size) {
+    assert(size != null);
+    assert(offset != null);
+    return FractionalOffset(
+      offset.dx / size.width,
+      offset.dy / size.height,
+    );
+  }
 
   /// Creates a fractional offset from a specific offset and rectangle.
   ///
@@ -51,7 +83,7 @@ class FractionalOffset {
   /// The returned [FractionalOffset] describes the position of the
   /// [Offset] in the [Rect], as a fraction of the [Rect].
   factory FractionalOffset.fromOffsetAndRect(Offset offset, Rect rect) {
-    return new FractionalOffset.fromOffsetAndSize(
+    return FractionalOffset.fromOffsetAndSize(
       offset - rect.topLeft,
       rect.size,
     );
@@ -64,134 +96,103 @@ class FractionalOffset {
   /// negative values represent positions to the left of the left edge, and
   /// values greater than 1.0 represent positions to the right of the right
   /// edge.
-  final double dx;
+  double get dx => (x + 1.0) / 2.0;
 
   /// The distance fraction in the vertical direction.
   ///
   /// A value of 0.0 corresponds to the topmost edge. A value of 1.0 corresponds
   /// to the bottommost edge. Values are not limited to that range; negative
-  /// values represent positions above the top, and values greated than 1.0
+  /// values represent positions above the top, and values greater than 1.0
   /// represent positions below the bottom.
-  final double dy;
+  double get dy => (y + 1.0) / 2.0;
 
   /// The top left corner.
-  static const FractionalOffset topLeft = const FractionalOffset(0.0, 0.0);
+  static const FractionalOffset topLeft = FractionalOffset(0.0, 0.0);
 
   /// The center point along the top edge.
-  static const FractionalOffset topCenter = const FractionalOffset(0.5, 0.0);
+  static const FractionalOffset topCenter = FractionalOffset(0.5, 0.0);
 
   /// The top right corner.
-  static const FractionalOffset topRight = const FractionalOffset(1.0, 0.0);
-
-  /// The bottom left corner.
-  static const FractionalOffset bottomLeft = const FractionalOffset(0.0, 1.0);
-
-  /// The center point along the bottom edge.
-  static const FractionalOffset bottomCenter = const FractionalOffset(0.5, 1.0);
-
-  /// The bottom right corner.
-  static const FractionalOffset bottomRight = const FractionalOffset(1.0, 1.0);
+  static const FractionalOffset topRight = FractionalOffset(1.0, 0.0);
 
   /// The center point along the left edge.
-  static const FractionalOffset centerLeft = const FractionalOffset(0.0, 0.5);
-
-  /// The center point along the right edge.
-  static const FractionalOffset centerRight = const FractionalOffset(1.0, 0.5);
+  static const FractionalOffset centerLeft = FractionalOffset(0.0, 0.5);
 
   /// The center point, both horizontally and vertically.
-  static const FractionalOffset center = const FractionalOffset(0.5, 0.5);
+  static const FractionalOffset center = FractionalOffset(0.5, 0.5);
 
-  /// Returns the negation of the given fractional offset.
-  FractionalOffset operator -() {
-    return new FractionalOffset(-dx, -dy);
-  }
+  /// The center point along the right edge.
+  static const FractionalOffset centerRight = FractionalOffset(1.0, 0.5);
 
-  /// Returns the difference between two fractional offsets.
-  FractionalOffset operator -(FractionalOffset other) {
-    return new FractionalOffset(dx - other.dx, dy - other.dy);
-  }
+  /// The bottom left corner.
+  static const FractionalOffset bottomLeft = FractionalOffset(0.0, 1.0);
 
-  /// Returns the sum of two fractional offsets.
-  FractionalOffset operator +(FractionalOffset other) {
-    return new FractionalOffset(dx + other.dx, dy + other.dy);
-  }
+  /// The center point along the bottom edge.
+  static const FractionalOffset bottomCenter = FractionalOffset(0.5, 1.0);
 
-  /// Scales the fractional offset in each dimension by the given factor.
-  FractionalOffset operator *(double other) {
-    return new FractionalOffset(dx * other, dy * other);
-  }
-
-  /// Divides the fractional offset in each dimension by the given factor.
-  FractionalOffset operator /(double other) {
-    return new FractionalOffset(dx / other, dy / other);
-  }
-
-  /// Integer divides the fractional offset in each dimension by the given factor.
-  FractionalOffset operator ~/(double other) {
-    return new FractionalOffset((dx ~/ other).toDouble(), (dy ~/ other).toDouble());
-  }
-
-  /// Computes the remainder in each dimension by the given factor.
-  FractionalOffset operator %(double other) {
-    return new FractionalOffset(dx % other, dy % other);
-  }
-
-  /// Returns the offset that is this fraction in the direction of the given offset.
-  Offset alongOffset(Offset other) {
-    return new Offset(dx * other.dx, dy * other.dy);
-  }
-
-  /// Returns the offset that is this fraction within the given size.
-  Offset alongSize(Size other) {
-    return new Offset(dx * other.width, dy * other.height);
-  }
-
-  /// Returns the point that is this fraction within the given rect.
-  Offset withinRect(Rect rect) {
-    return new Offset(rect.left + dx * rect.width, rect.top + dy * rect.height);
-  }
-
-  /// Returns a rect of the given size, centered at this fraction of the given rect.
-  ///
-  /// For example, a 100×100 size inscribed on a 200×200 rect using
-  /// [FractionalOffset.topLeft] would be the 100×100 rect at the top left of
-  /// the 200×200 rect.
-  Rect inscribe(Size size, Rect rect) {
-    return new Rect.fromLTWH(
-      rect.left + (rect.width - size.width) * dx,
-      rect.top + (rect.height - size.height) * dy,
-      size.width,
-      size.height
-    );
-  }
+  /// The bottom right corner.
+  static const FractionalOffset bottomRight = FractionalOffset(1.0, 1.0);
 
   @override
-  bool operator ==(dynamic other) {
+  Alignment operator -(Alignment other) {
     if (other is! FractionalOffset)
-      return false;
-    final FractionalOffset typedOther = other;
-    return dx == typedOther.dx &&
-           dy == typedOther.dy;
+      return super - other;
+    final FractionalOffset typedOther = other as FractionalOffset;
+    return FractionalOffset(dx - typedOther.dx, dy - typedOther.dy);
   }
 
   @override
-  int get hashCode => hashValues(dx, dy);
+  Alignment operator +(Alignment other) {
+    if (other is! FractionalOffset)
+      return super + other;
+    final FractionalOffset typedOther = other as FractionalOffset;
+    return FractionalOffset(dx + typedOther.dx, dy + typedOther.dy);
+  }
 
-  /// Linearly interpolate between two EdgeInsets.
+  @override
+  FractionalOffset operator -() {
+    return FractionalOffset(-dx, -dy);
+  }
+
+  @override
+  FractionalOffset operator *(double other) {
+    return FractionalOffset(dx * other, dy * other);
+  }
+
+  @override
+  FractionalOffset operator /(double other) {
+    return FractionalOffset(dx / other, dy / other);
+  }
+
+  @override
+  FractionalOffset operator ~/(double other) {
+    return FractionalOffset((dx ~/ other).toDouble(), (dy ~/ other).toDouble());
+  }
+
+  @override
+  FractionalOffset operator %(double other) {
+    return FractionalOffset(dx % other, dy % other);
+  }
+
+  /// Linearly interpolate between two [FractionalOffset]s.
   ///
-  /// If either is null, this function interpolates from [FractionalOffset.topLeft].
-  // TODO(abarth): Consider interpolating from [FractionalOffset.center] instead
-  // to remove upper-left bias.
+  /// If either is null, this function interpolates from [FractionalOffset.center].
+  ///
+  /// {@macro dart.ui.shadow.lerp}
   static FractionalOffset lerp(FractionalOffset a, FractionalOffset b, double t) {
+    assert(t != null);
     if (a == null && b == null)
       return null;
     if (a == null)
-      return new FractionalOffset(b.dx * t, b.dy * t);
+      return FractionalOffset(ui.lerpDouble(0.5, b.dx, t), ui.lerpDouble(0.5, b.dy, t));
     if (b == null)
-      return new FractionalOffset(a.dx * (1.0 - t), a.dy * (1.0 - t));
-    return new FractionalOffset(ui.lerpDouble(a.dx, b.dx, t), ui.lerpDouble(a.dy, b.dy, t));
+      return FractionalOffset(ui.lerpDouble(a.dx, 0.5, t), ui.lerpDouble(a.dy, 0.5, t));
+    return FractionalOffset(ui.lerpDouble(a.dx, b.dx, t), ui.lerpDouble(a.dy, b.dy, t));
   }
 
   @override
-  String toString() => '$runtimeType($dx, $dy)';
+  String toString() {
+    return 'FractionalOffset(${dx.toStringAsFixed(1)}, '
+                            '${dy.toStringAsFixed(1)})';
+  }
 }

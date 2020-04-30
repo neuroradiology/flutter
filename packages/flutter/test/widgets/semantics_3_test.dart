@@ -1,8 +1,6 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-
-import 'dart:ui' show SemanticsFlags;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/widgets.dart';
@@ -12,82 +10,116 @@ import 'semantics_tester.dart';
 
 void main() {
   testWidgets('Semantics 3', (WidgetTester tester) async {
-    final SemanticsTester semantics = new SemanticsTester(tester);
+    final SemanticsTester semantics = SemanticsTester(tester);
 
     // implicit annotators
     await tester.pumpWidget(
-      new Container(
-        child: new Semantics(
-          label: 'test',
-          child: new Container(
-            child: const Semantics(
-              checked: true
-            )
-          )
-        )
-      )
+      Semantics(
+        container: true,
+        child: Container(
+          child: Semantics(
+            label: 'test',
+            textDirection: TextDirection.ltr,
+            child: Container(
+              child: Semantics(
+                checked: true
+              ),
+            ),
+          ),
+        ),
+      ),
     );
 
     expect(semantics, hasSemantics(
-      new TestSemantics.root(
-        flags: SemanticsFlags.hasCheckedState.index | SemanticsFlags.isChecked.index,
-        label: 'test',
-      )
+      TestSemantics.root(
+        children: <TestSemantics>[
+          TestSemantics.rootChild(
+            id: 1,
+            flags: SemanticsFlag.hasCheckedState.index | SemanticsFlag.isChecked.index,
+            label: 'test',
+            rect: TestSemantics.fullScreen,
+          ),
+        ],
+      ),
     ));
 
     // remove one
     await tester.pumpWidget(
-      new Container(
-        child: new Container(
-          child: const Semantics(
-            checked: true
-          )
-        )
-      )
+      Semantics(
+        container: true,
+        child: Container(
+          child: Semantics(
+             checked: true,
+          ),
+        ),
+      ),
     );
 
     expect(semantics, hasSemantics(
-      new TestSemantics.root(
-        flags: SemanticsFlags.hasCheckedState.index | SemanticsFlags.isChecked.index,
-      )
+      TestSemantics.root(
+        children: <TestSemantics>[
+          TestSemantics.rootChild(
+            id: 1,
+            flags: SemanticsFlag.hasCheckedState.index | SemanticsFlag.isChecked.index,
+            rect: TestSemantics.fullScreen,
+          ),
+        ],
+      ),
     ));
 
     // change what it says
     await tester.pumpWidget(
-      new Container(
-        child: new Container(
-          child: const Semantics(
-            label: 'test'
-          )
-        )
-      )
+      Semantics(
+        container: true,
+        child: Container(
+          child: Semantics(
+            label: 'test',
+            textDirection: TextDirection.ltr,
+          ),
+        ),
+      ),
     );
 
     expect(semantics, hasSemantics(
-      new TestSemantics.root(
-        label: 'test',
-      )
+      TestSemantics.root(
+        children: <TestSemantics>[
+          TestSemantics.rootChild(
+            id: 1,
+            label: 'test',
+            textDirection: TextDirection.ltr,
+            rect: TestSemantics.fullScreen,
+          ),
+        ],
+      ),
     ));
 
     // add a node
     await tester.pumpWidget(
-      new Container(
-        child: new Semantics(
-          checked: true,
-          child: new Container(
-            child: const Semantics(
-              label: 'test'
-            )
-          )
-        )
-      )
+      Semantics(
+        container: true,
+        child: Container(
+          child: Semantics(
+            checked: true,
+            child: Semantics(
+              label: 'test',
+              textDirection: TextDirection.ltr,
+            ),
+          ),
+        ),
+      ),
     );
 
     expect(semantics, hasSemantics(
-      new TestSemantics.root(
-        flags: SemanticsFlags.hasCheckedState.index | SemanticsFlags.isChecked.index,
-        label: 'test',
-      )
+      TestSemantics.root(
+        children: <TestSemantics>[
+          TestSemantics.rootChild(
+            id: 1,
+            flags: SemanticsFlag.hasCheckedState.index | SemanticsFlag.isChecked.index,
+            label: 'test',
+            rect: TestSemantics.fullScreen,
+          ),
+        ],
+      ),
     ));
 
     int changeCount = 0;
@@ -97,16 +129,18 @@ void main() {
 
     // make no changes
     await tester.pumpWidget(
-      new Container(
-        child: new Semantics(
-          checked: true,
-          child: new Container(
-            child: const Semantics(
-              label: 'test'
-            )
-          )
-        )
-      )
+      Semantics(
+        container: true,
+        child: Container(
+          child: Semantics(
+            checked: true,
+            child: Semantics(
+              label: 'test',
+              textDirection: TextDirection.ltr,
+            ),
+          ),
+        ),
+      ),
     );
 
     expect(changeCount, 0);

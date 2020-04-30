@@ -1,8 +1,8 @@
-// Copyright 2017 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'dart:convert' show JSON;
+import 'dart:convert' show json;
 
 import 'package:meta/meta.dart';
 
@@ -32,30 +32,34 @@ class BenchmarkResultPrinter {
   /// [name] is a computer-readable name of the result used as a key in the JSON
   /// serialization of the results.
   void addResult({ @required String description, @required double value, @required String unit, @required String name }) {
-    _results.add(new _BenchmarkResult(description, value, unit, name));
+    _results.add(_BenchmarkResult(description, value, unit, name));
   }
 
   /// Prints the results added via [addResult] to standard output, once as JSON
   /// for computer consumption and once formatted as plain text for humans.
   void printToStdout() {
     // IMPORTANT: keep these values in sync with dev/devicelab/bin/tasks/microbenchmarks.dart
-    print('================ RESULTS ================');
-    print(_printJson());
-    print('================ FORMATTED ==============');
+    const String jsonStart = '================ RESULTS ================';
+    const String jsonEnd = '================ FORMATTED ==============';
+    const String jsonPrefix = ':::JSON:::';
+
+    print(jsonStart);
+    print('$jsonPrefix ${_printJson()}');
+    print(jsonEnd);
     print(_printPlainText());
   }
 
   String _printJson() {
-    return JSON.encode(new Map<String, double>.fromIterable(
-      _results,
-      key: (_BenchmarkResult result) => result.name,
-      value: (_BenchmarkResult result) => result.value,
-    ));
+    final Map<String, double> results = <String, double>{};
+    for (final _BenchmarkResult result in _results) {
+      results[result.name] = result.value;
+    }
+    return json.encode(results);
   }
 
   String _printPlainText() {
-    final StringBuffer buf = new StringBuffer();
-    for (_BenchmarkResult result in _results) {
+    final StringBuffer buf = StringBuffer();
+    for (final _BenchmarkResult result in _results) {
       buf.writeln('${result.description}: ${result.value.toStringAsFixed(1)} ${result.unit}');
     }
     return buf.toString();

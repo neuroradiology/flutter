@@ -1,4 +1,4 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -10,57 +10,91 @@ import 'package:flutter/scheduler.dart';
 
 import 'constants.dart';
 
-const Duration _kToggleDuration = const Duration(milliseconds: 200);
-final Tween<double> _kRadialReactionRadiusTween = new Tween<double>(begin: 0.0, end: kRadialReactionRadius);
+// Duration of the animation that moves the toggle from one state to another.
+const Duration _kToggleDuration = Duration(milliseconds: 200);
+
+// Radius of the radial reaction over time.
+final Animatable<double> _kRadialReactionRadiusTween = Tween<double>(begin: 0.0, end: kRadialReactionRadius);
+
+// Duration of the fade animation for the reaction when focus and hover occur.
+const Duration _kReactionFadeDuration = Duration(milliseconds: 50);
 
 /// A base class for material style toggleable controls with toggle animations.
 ///
 /// This class handles storing the current value, dispatching ValueChanged on a
 /// tap gesture and driving a changed animation. Subclasses are responsible for
 /// painting.
-abstract class RenderToggleable extends RenderConstrainedBox implements SemanticsActionHandler {
+abstract class RenderToggleable extends RenderConstrainedBox {
   /// Creates a toggleable render object.
   ///
-  /// The [value], [activeColor], and [inactiveColor] arguments must not be
-  /// null.
+  /// The [activeColor], and [inactiveColor] arguments must not be
+  /// null. The [value] can only be null if tristate is true.
   RenderToggleable({
     @required bool value,
-    Size size,
+    bool tristate = false,
     @required Color activeColor,
     @required Color inactiveColor,
+    Color hoverColor,
+    Color focusColor,
     ValueChanged<bool> onChanged,
+    BoxConstraints additionalConstraints,
     @required TickerProvider vsync,
-  }) : assert(value != null),
+    bool hasFocus = false,
+    bool hovering = false,
+  }) : assert(tristate != null),
+       assert(tristate || value != null),
        assert(activeColor != null),
        assert(inactiveColor != null),
        assert(vsync != null),
        _value = value,
+       _tristate = tristate,
        _activeColor = activeColor,
        _inactiveColor = inactiveColor,
+       _hoverColor = hoverColor ?? activeColor.withAlpha(kRadialReactionAlpha),
+       _focusColor = focusColor ?? activeColor.withAlpha(kRadialReactionAlpha),
        _onChanged = onChanged,
+       _hasFocus = hasFocus,
+       _hovering = hovering,
        _vsync = vsync,
-       super(additionalConstraints: new BoxConstraints.tight(size)) {
-    _tap = new TapGestureRecognizer()
+       super(additionalConstraints: additionalConstraints) {
+    _tap = TapGestureRecognizer()
       ..onTapDown = _handleTapDown
       ..onTap = _handleTap
       ..onTapUp = _handleTapUp
       ..onTapCancel = _handleTapCancel;
-    _positionController = new AnimationController(
+    _positionController = AnimationController(
       duration: _kToggleDuration,
-      value: value ? 1.0 : 0.0,
+      value: value == false ? 0.0 : 1.0,
       vsync: vsync,
     );
-    _position = new CurvedAnimation(
+    _position = CurvedAnimation(
       parent: _positionController,
       curve: Curves.linear,
-    )..addListener(markNeedsPaint)
-     ..addStatusListener(_handlePositionStateChanged);
-    _reactionController = new AnimationController(
+    )..addListener(markNeedsPaint);
+    _reactionController = AnimationController(
       duration: kRadialReactionDuration,
       vsync: vsync,
     );
-    _reaction = new CurvedAnimation(
+    _reaction = CurvedAnimation(
       parent: _reactionController,
+      curve: Curves.fastOutSlowIn,
+    )..addListener(markNeedsPaint);
+    _reactionHoverFadeController = AnimationController(
+      duration: _kReactionFadeDuration,
+      value: hovering || hasFocus ? 1.0 : 0.0,
+      vsync: vsync,
+    );
+    _reactionHoverFade = CurvedAnimation(
+      parent: _reactionHoverFadeController,
+      curve: Curves.fastOutSlowIn,
+    )..addListener(markNeedsPaint);
+    _reactionFocusFadeController = AnimationController(
+      duration: _kReactionFadeDuration,
+      value: hovering || hasFocus ? 1.0 : 0.0,
+      vsync: vsync,
+    );
+    _reactionFocusFade = CurvedAnimation(
+      parent: _reactionFocusFadeController,
       curve: Curves.fastOutSlowIn,
     )..addListener(markNeedsPaint);
   }
@@ -79,8 +113,9 @@ abstract class RenderToggleable extends RenderConstrainedBox implements Semantic
   /// The visual value of the control.
   ///
   /// When the control is inactive, the [value] is false and this animation has
-  /// the value 0.0. When the control is active, the value is true and this
-  /// animation has the value 1.0. When the control is changing from inactive
+  /// the value 0.0. When the control is active, the value either true or tristate
+  /// is true and the value is null. When the control is active the animation
+  /// has a value of 1.0. When the control is changing from inactive
   /// to active (or vice versa), [value] is the target value and this animation
   /// gradually updates from 0.0 to 1.0 (or vice versa).
   CurvedAnimation get position => _position;
@@ -98,6 +133,66 @@ abstract class RenderToggleable extends RenderConstrainedBox implements Semantic
   AnimationController _reactionController;
   Animation<double> _reaction;
 
+  /// Used by subclasses to control the radial reaction's opacity animation for
+  /// [hasFocus] changes.
+  ///
+  /// Some controls have a radial ink reaction to focus. This animation
+  /// controller can be used to start or stop these ink reaction fade-ins and
+  /// fade-outs.
+  ///
+  /// Subclasses should call [paintRadialReaction] to actually paint the radial
+  /// reaction.
+  @protected
+  AnimationController get reactionFocusFadeController => _reactionFocusFadeController;
+  AnimationController _reactionFocusFadeController;
+  Animation<double> _reactionFocusFade;
+
+  /// Used by subclasses to control the radial reaction's opacity animation for
+  /// [hovering] changes.
+  ///
+  /// Some controls have a radial ink reaction to pointer hover. This animation
+  /// controller can be used to start or stop these ink reaction fade-ins and
+  /// fade-outs.
+  ///
+  /// Subclasses should call [paintRadialReaction] to actually paint the radial
+  /// reaction.
+  @protected
+  AnimationController get reactionHoverFadeController => _reactionHoverFadeController;
+  AnimationController _reactionHoverFadeController;
+  Animation<double> _reactionHoverFade;
+
+  /// True if this toggleable has the input focus.
+  bool get hasFocus => _hasFocus;
+  bool _hasFocus;
+  set hasFocus(bool value) {
+    assert(value != null);
+    if (value == _hasFocus)
+      return;
+    _hasFocus = value;
+    if (_hasFocus) {
+      _reactionFocusFadeController.forward();
+    } else {
+      _reactionFocusFadeController.reverse();
+    }
+    markNeedsPaint();
+  }
+
+  /// True if this toggleable is being hovered over by a pointer.
+  bool get hovering => _hovering;
+  bool _hovering;
+  set hovering(bool value) {
+    assert(value != null);
+    if (value == _hovering)
+      return;
+    _hovering = value;
+    if (_hovering) {
+      _reactionHoverFadeController.forward();
+    } else {
+      _reactionHoverFadeController.reverse();
+    }
+    markNeedsPaint();
+  }
+
   /// The [TickerProvider] for the [AnimationController]s that run the animations.
   TickerProvider get vsync => _vsync;
   TickerProvider _vsync;
@@ -110,7 +205,11 @@ abstract class RenderToggleable extends RenderConstrainedBox implements Semantic
     reactionController.resync(vsync);
   }
 
-  /// Whether this control is current "active" (checked, on, selected) or "inactive" (unchecked, off, not selected).
+  /// False if this control is "inactive" (not checked, off, or unselected).
+  ///
+  /// If value is true then the control "active" (checked, on, or selected). If
+  /// tristate is true and value is null, then the control is considered to be
+  /// in its third or "indeterminate" state.
   ///
   /// When the value changes, this object starts the [positionController] and
   /// [position] animations to animate the visual appearance of the control to
@@ -118,18 +217,44 @@ abstract class RenderToggleable extends RenderConstrainedBox implements Semantic
   bool get value => _value;
   bool _value;
   set value(bool value) {
-    assert(value != null);
+    assert(tristate || value != null);
     if (value == _value)
       return;
     _value = value;
-    markNeedsSemanticsUpdate(onlyChanges: true, noGeometry: true);
+    markNeedsSemanticsUpdate();
     _position
       ..curve = Curves.easeIn
       ..reverseCurve = Curves.easeOut;
-    if (value)
-      _positionController.forward();
-    else
-      _positionController.reverse();
+    if (tristate) {
+      switch (_positionController.status) {
+        case AnimationStatus.forward:
+        case AnimationStatus.completed:
+          _positionController.reverse();
+          break;
+        default:
+          _positionController.forward();
+      }
+    } else {
+      if (value == true)
+        _positionController.forward();
+      else
+        _positionController.reverse();
+    }
+  }
+
+  /// If true, [value] can be true, false, or null, otherwise [value] must
+  /// be true or false.
+  ///
+  /// When [tristate] is true and [value] is null, then the control is
+  /// considered to be in its third or "indeterminate" state.
+  bool get tristate => _tristate;
+  bool _tristate;
+  set tristate(bool value) {
+    assert(tristate != null);
+    if (value == _tristate)
+      return;
+    _tristate = value;
+    markNeedsSemanticsUpdate();
   }
 
   /// The color that should be used in the active state (i.e., when [value] is true).
@@ -158,12 +283,58 @@ abstract class RenderToggleable extends RenderConstrainedBox implements Semantic
     markNeedsPaint();
   }
 
+  /// The color that should be used for the reaction when [hovering] is true.
+  ///
+  /// Used when the toggleable needs to change the reaction color/transparency,
+  /// when it is being hovered over.
+  ///
+  /// Defaults to the [activeColor] at alpha [kRadialReactionAlpha].
+  Color get hoverColor => _hoverColor;
+  Color _hoverColor;
+  set hoverColor(Color value) {
+    assert(value != null);
+    if (value == _hoverColor)
+      return;
+    _hoverColor = value;
+    markNeedsPaint();
+  }
+
+  /// The color that should be used for the reaction when [hasFocus] is true.
+  ///
+  /// Used when the toggleable needs to change the reaction color/transparency,
+  /// when it has focus.
+  ///
+  /// Defaults to the [activeColor] at alpha [kRadialReactionAlpha].
+  Color get focusColor => _focusColor;
+  Color _focusColor;
+  set focusColor(Color value) {
+    assert(value != null);
+    if (value == _focusColor)
+      return;
+    _focusColor = value;
+    markNeedsPaint();
+  }
+
+  /// The color that should be used for the reaction when drawn.
+  ///
+  /// Used when the toggleable needs to change the reaction color/transparency
+  /// that is displayed when the toggleable is toggled by a tap.
+  ///
+  /// Defaults to the [activeColor] at alpha [kRadialReactionAlpha].
+  Color get reactionColor => _reactionColor;
+  Color _reactionColor;
+  set reactionColor(Color value) {
+    assert(value != null);
+    if (value == _reactionColor)
+      return;
+    _reactionColor = value;
+    markNeedsPaint();
+  }
+
   /// Called when the control changes value.
   ///
   /// If the control is tapped, [onChanged] is called immediately with the new
-  /// value. If the control changes value due to an animation (see
-  /// [positionController]), the callback is called when the animation
-  /// completes.
+  /// value.
   ///
   /// The control is considered interactive (see [isInteractive]) if this
   /// callback is non-null. If the callback is null, then the control is
@@ -178,7 +349,7 @@ abstract class RenderToggleable extends RenderConstrainedBox implements Semantic
     _onChanged = value;
     if (wasInteractive != isInteractive) {
       markNeedsPaint();
-      markNeedsSemanticsUpdate(noGeometry: true);
+      markNeedsSemanticsUpdate();
     }
   }
 
@@ -196,10 +367,10 @@ abstract class RenderToggleable extends RenderConstrainedBox implements Semantic
   @override
   void attach(PipelineOwner owner) {
     super.attach(owner);
-    if (value)
-      _positionController.forward();
-    else
+    if (value == false)
       _positionController.reverse();
+    else
+      _positionController.forward();
     if (isInteractive) {
       switch (_reactionController.status) {
         case AnimationStatus.forward:
@@ -223,15 +394,6 @@ abstract class RenderToggleable extends RenderConstrainedBox implements Semantic
     super.detach();
   }
 
-  void _handlePositionStateChanged(AnimationStatus status) {
-    if (isInteractive) {
-      if (status == AnimationStatus.completed && !_value)
-        onChanged(true);
-      else if (status == AnimationStatus.dismissed && _value)
-        onChanged(false);
-    }
-  }
-
   void _handleTapDown(TapDownDetails details) {
     if (isInteractive) {
       _downPosition = globalToLocal(details.globalPosition);
@@ -240,8 +402,20 @@ abstract class RenderToggleable extends RenderConstrainedBox implements Semantic
   }
 
   void _handleTap() {
-    if (isInteractive)
-      onChanged(!_value);
+    if (!isInteractive)
+      return;
+    switch (value) {
+      case false:
+        onChanged(true);
+        break;
+      case true:
+        onChanged(tristate ? null : false);
+        break;
+      default: // case null:
+        onChanged(false);
+        break;
+    }
+    sendSemanticsEvent(const TapSemanticEvent());
   }
 
   void _handleTapUp(TapUpDetails details) {
@@ -273,40 +447,36 @@ abstract class RenderToggleable extends RenderConstrainedBox implements Semantic
   /// point at which the user interacted with the control, which is handled
   /// automatically).
   void paintRadialReaction(Canvas canvas, Offset offset, Offset origin) {
-    if (!_reaction.isDismissed) {
-      // TODO(abarth): We should have a different reaction color when position is zero.
-      final Paint reactionPaint = new Paint()..color = activeColor.withAlpha(kRadialReactionAlpha);
+    if (!_reaction.isDismissed || !_reactionFocusFade.isDismissed || !_reactionHoverFade.isDismissed) {
+      final Paint reactionPaint = Paint()
+        ..color = Color.lerp(
+          Color.lerp(activeColor.withAlpha(kRadialReactionAlpha), hoverColor, _reactionHoverFade.value),
+          focusColor,
+          _reactionFocusFade.value,
+        );
       final Offset center = Offset.lerp(_downPosition ?? origin, origin, _reaction.value);
-      final double radius = _kRadialReactionRadiusTween.evaluate(_reaction);
-      canvas.drawCircle(center + offset, radius, reactionPaint);
+      final double reactionRadius = hasFocus || hovering
+          ? kRadialReactionRadius
+          : _kRadialReactionRadiusTween.evaluate(_reaction);
+      if (reactionRadius > 0.0) {
+        canvas.drawCircle(center + offset, reactionRadius, reactionPaint);
+      }
     }
   }
 
   @override
-  bool get isSemanticBoundary => isInteractive;
+  void describeSemanticsConfiguration(SemanticsConfiguration config) {
+    super.describeSemanticsConfiguration(config);
 
-  @override
-  SemanticsAnnotator get semanticsAnnotator => _annotate;
-
-  void _annotate(SemanticsNode semantics) {
-    semantics
-      ..hasCheckedState = true
-      ..isChecked = _value;
+    config.isEnabled = isInteractive;
     if (isInteractive)
-      semantics.addAction(SemanticsAction.tap);
+      config.onTap = _handleTap;
   }
 
   @override
-  void performAction(SemanticsAction action) {
-    if (action == SemanticsAction.tap)
-      _handleTap();
-  }
-
-  @override
-  void debugFillDescription(List<String> description) {
-    super.debugFillDescription(description);
-    description.add('value: ${value ? "checked" : "unchecked"}');
-    if (!isInteractive)
-      description.add('disabled');
+  void debugFillProperties(DiagnosticPropertiesBuilder properties) {
+    super.debugFillProperties(properties);
+    properties.add(FlagProperty('value', value: value, ifTrue: 'checked', ifFalse: 'unchecked', showName: true));
+    properties.add(FlagProperty('isInteractive', value: isInteractive, ifTrue: 'enabled', ifFalse: 'disabled', defaultValue: true));
   }
 }

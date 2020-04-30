@@ -1,28 +1,34 @@
-// Copyright 2017 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 package com.yourcompany.channels;
 
+import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
+import java.util.Date;
 
 import android.os.Bundle;
+import androidx.annotation.NonNull;
 
-import io.flutter.app.FlutterActivity;
+import io.flutter.embedding.android.FlutterActivity;
+import io.flutter.embedding.engine.dart.DartExecutor;
+import io.flutter.embedding.engine.FlutterEngine;
 import io.flutter.plugin.common.*;
 import io.flutter.plugins.GeneratedPluginRegistrant;
 
 public class MainActivity extends FlutterActivity {
   @Override
-  protected void onCreate(Bundle savedInstanceState) {
-    super.onCreate(savedInstanceState);
-    GeneratedPluginRegistrant.registerWith(this);
-    setupMessageHandshake(new BasicMessageChannel<>(getFlutterView(), "binary-msg", BinaryCodec.INSTANCE));
-    setupMessageHandshake(new BasicMessageChannel<>(getFlutterView(), "string-msg", StringCodec.INSTANCE));
-    setupMessageHandshake(new BasicMessageChannel<>(getFlutterView(), "json-msg", JSONMessageCodec.INSTANCE));
-    setupMessageHandshake(new BasicMessageChannel<>(getFlutterView(), "std-msg", StandardMessageCodec.INSTANCE));
-    setupMethodHandshake(new MethodChannel(getFlutterView(), "json-method", JSONMethodCodec.INSTANCE));
-    setupMethodHandshake(new MethodChannel(getFlutterView(), "std-method", StandardMethodCodec.INSTANCE));
+  public void configureFlutterEngine(@NonNull FlutterEngine flutterEngine) {
+    super.configureFlutterEngine(flutterEngine);
+
+    DartExecutor dartExecutor = flutterEngine.getDartExecutor();
+    setupMessageHandshake(new BasicMessageChannel<>(dartExecutor, "binary-msg", BinaryCodec.INSTANCE));
+    setupMessageHandshake(new BasicMessageChannel<>(dartExecutor, "string-msg", StringCodec.INSTANCE));
+    setupMessageHandshake(new BasicMessageChannel<>(dartExecutor, "json-msg", JSONMessageCodec.INSTANCE));
+    setupMessageHandshake(new BasicMessageChannel<>(dartExecutor, "std-msg", ExtendedStandardMessageCodec.INSTANCE));
+    setupMethodHandshake(new MethodChannel(dartExecutor, "json-method", JSONMethodCodec.INSTANCE));
+    setupMethodHandshake(new MethodChannel(dartExecutor, "std-method", new StandardMethodCodec(ExtendedStandardMessageCodec.INSTANCE)));
   }
 
   private <T> void setupMessageHandshake(final BasicMessageChannel<T> channel) {
@@ -44,7 +50,7 @@ public class MainActivity extends FlutterActivity {
   }
 
   // Outgoing ByteBuffer messages must be direct-allocated and payload placed between
-  // positon 0 and current position.
+  // position 0 and current position.
   @SuppressWarnings("unchecked")
   private <T> T echo(T message) {
     if (message instanceof ByteBuffer) {
@@ -133,5 +139,51 @@ public class MainActivity extends FlutterActivity {
         result.notImplemented();
       }
     });
+  }
+}
+
+final class ExtendedStandardMessageCodec extends StandardMessageCodec {
+  public static final ExtendedStandardMessageCodec INSTANCE = new ExtendedStandardMessageCodec();
+  private static final byte DATE = (byte) 128;
+  private static final byte PAIR = (byte) 129;
+
+  @Override
+  protected void writeValue(ByteArrayOutputStream stream, Object value) {
+    if (value instanceof Date) {
+      stream.write(DATE);
+      writeLong(stream, ((Date) value).getTime());
+    } else if (value instanceof Pair) {
+      stream.write(PAIR);
+      writeValue(stream, ((Pair) value).left);
+      writeValue(stream, ((Pair) value).right);
+    } else {
+      super.writeValue(stream, value);
+    }
+  }
+
+  @Override
+  protected Object readValueOfType(byte type, ByteBuffer buffer) {
+    switch (type) {
+      case DATE:
+        return new Date(buffer.getLong());
+      case PAIR:
+        return new Pair(readValue(buffer), readValue(buffer));
+      default: return super.readValueOfType(type, buffer);
+    }
+  }
+}
+
+final class Pair {
+  public final Object left;
+  public final Object right;
+
+  public Pair(Object left, Object right) {
+    this.left = left;
+    this.right = right;
+  }
+
+  @Override
+  public String toString() {
+    return "Pair[" + left + ", " + right + "]";
   }
 }

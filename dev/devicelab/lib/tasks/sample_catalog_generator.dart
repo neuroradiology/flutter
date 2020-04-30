@@ -1,4 +1,4 @@
-// Copyright 2017 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -7,7 +7,6 @@ import 'dart:io';
 
 import '../framework/adb.dart';
 import '../framework/framework.dart';
-import '../framework/ios.dart';
 import '../framework/utils.dart';
 import 'save_catalog_screenshots.dart' show saveCatalogScreenshots;
 
@@ -18,14 +17,12 @@ Future<TaskResult> samplePageCatalogGenerator(String authorizationToken) async {
   final String deviceId = device.deviceId;
 
   final Directory catalogDirectory = dir('${flutterDirectory.path}/examples/catalog');
-  await inDirectory(catalogDirectory, () async {
+  await inDirectory<void>(catalogDirectory, () async {
     await flutter('packages', options: <String>['get']);
 
-    final bool isIosDevice = deviceOperatingSystem == DeviceOperatingSystem.ios;
-    if (isIosDevice)
-      await prepareProvisioningCertificates(catalogDirectory.path);
+    final String commit = await getCurrentFlutterRepoCommit();
 
-    await dart(<String>['bin/sample_page.dart']);
+    await dart(<String>['bin/sample_page.dart', commit]);
 
     await flutter('drive', options: <String>[
       '--target',
@@ -36,11 +33,11 @@ Future<TaskResult> samplePageCatalogGenerator(String authorizationToken) async {
 
     await saveCatalogScreenshots(
       directory: dir('${flutterDirectory.path}/examples/catalog/.generated'),
-      commit: await getCurrentFlutterRepoCommit(),
-      token: authorizationToken,
-      prefix: isIosDevice ? 'ios_' : '',
+      commit: commit,
+      token: authorizationToken, // TODO(fujino): workaround auth token for local runs
+      prefix: deviceOperatingSystem == DeviceOperatingSystem.ios ? 'ios_' : '',
     );
   });
 
-  return new TaskResult.success(null);
+  return TaskResult.success(null);
 }

@@ -1,28 +1,31 @@
-// Copyright 2016 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 import 'dart:math' as math;
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/gestures.dart' show DragStartBehavior;
 
-import 'button.dart';
 import 'button_bar.dart';
 import 'card.dart';
+import 'constants.dart';
 import 'data_table.dart';
 import 'data_table_source.dart';
+import 'debug.dart';
 import 'dropdown.dart';
 import 'icon_button.dart';
 import 'icons.dart';
+import 'ink_decoration.dart';
+import 'material_localizations.dart';
 import 'progress_indicator.dart';
 import 'theme.dart';
 
 /// A material design data table that shows data using multiple pages.
 ///
 /// A paginated data table shows [rowsPerPage] rows of data per page and
-/// provies controls for showing other pages.
+/// provides controls for showing other pages.
 ///
 /// Data is read lazily from from a [DataTableSource]. The widget is presented
 /// as a [Card].
@@ -30,7 +33,7 @@ import 'theme.dart';
 /// See also:
 ///
 ///  * [DataTable], which is not paginated.
-///  * <https://material.io/guidelines/components/data-tables.html#data-tables-tables-within-cards>
+///  * <https://material.io/go/design-data-tables#data-tables-tables-within-cards>
 class PaginatedDataTable extends StatefulWidget {
   /// Creates a widget describing a paginated [DataTable] on a [Card].
   ///
@@ -65,26 +68,38 @@ class PaginatedDataTable extends StatefulWidget {
     this.actions,
     @required this.columns,
     this.sortColumnIndex,
-    this.sortAscending: true,
+    this.sortAscending = true,
     this.onSelectAll,
-    this.initialFirstRowIndex: 0,
+    this.dataRowHeight = kMinInteractiveDimension,
+    this.headingRowHeight = 56.0,
+    this.horizontalMargin = 24.0,
+    this.columnSpacing = 56.0,
+    this.showCheckboxColumn = true,
+    this.initialFirstRowIndex = 0,
     this.onPageChanged,
-    this.rowsPerPage: defaultRowsPerPage,
-    this.availableRowsPerPage: const <int>[defaultRowsPerPage, defaultRowsPerPage * 2, defaultRowsPerPage * 5, defaultRowsPerPage * 10],
+    this.rowsPerPage = defaultRowsPerPage,
+    this.availableRowsPerPage = const <int>[defaultRowsPerPage, defaultRowsPerPage * 2, defaultRowsPerPage * 5, defaultRowsPerPage * 10],
     this.onRowsPerPageChanged,
-    @required this.source
+    this.dragStartBehavior = DragStartBehavior.start,
+    @required this.source,
   }) : assert(header != null),
        assert(columns != null),
+       assert(dragStartBehavior != null),
        assert(columns.isNotEmpty),
        assert(sortColumnIndex == null || (sortColumnIndex >= 0 && sortColumnIndex < columns.length)),
        assert(sortAscending != null),
+       assert(dataRowHeight != null),
+       assert(headingRowHeight != null),
+       assert(horizontalMargin != null),
+       assert(columnSpacing != null),
+       assert(showCheckboxColumn != null),
        assert(rowsPerPage != null),
        assert(rowsPerPage > 0),
        assert(() {
          if (onRowsPerPageChanged != null)
            assert(availableRowsPerPage != null && availableRowsPerPage.contains(rowsPerPage));
          return true;
-       }),
+       }()),
        assert(source != null),
        super(key: key);
 
@@ -126,6 +141,34 @@ class PaginatedDataTable extends StatefulWidget {
   /// See [DataTable.onSelectAll].
   final ValueSetter<bool> onSelectAll;
 
+  /// The height of each row (excluding the row that contains column headings).
+  ///
+  /// This value is optional and defaults to kMinInteractiveDimension if not
+  /// specified.
+  final double dataRowHeight;
+
+  /// The height of the heading row.
+  ///
+  /// This value is optional and defaults to 56.0 if not specified.
+  final double headingRowHeight;
+
+  /// The horizontal margin between the edges of the table and the content
+  /// in the first and last cells of each row.
+  ///
+  /// When a checkbox is displayed, it is also the margin between the checkbox
+  /// the content in the first data column.
+  ///
+  /// This value defaults to 24.0 to adhere to the Material Design specifications.
+  final double horizontalMargin;
+
+  /// The horizontal margin between the contents of each data column.
+  ///
+  /// This value defaults to 56.0 to adhere to the Material Design specifications.
+  final double columnSpacing;
+
+  /// {@macro flutter.material.dataTable.showCheckboxColumn}
+  final bool showCheckboxColumn;
+
   /// The index of the first row to display when the widget is first created.
   final int initialFirstRowIndex;
 
@@ -138,8 +181,8 @@ class PaginatedDataTable extends StatefulWidget {
   ///
   /// See also:
   ///
-  /// * [onRowsPerPageChanged]
-  /// * [defaultRowsPerPage]
+  ///  * [onRowsPerPageChanged]
+  ///  * [defaultRowsPerPage]
   final int rowsPerPage;
 
   /// The default value for [rowsPerPage].
@@ -168,8 +211,11 @@ class PaginatedDataTable extends StatefulWidget {
   /// [PaginatedDataTable] constructor is called.
   final DataTableSource source;
 
+  /// {@macro flutter.widgets.scrollable.dragStartBehavior}
+  final DragStartBehavior dragStartBehavior;
+
   @override
-  PaginatedDataTableState createState() => new PaginatedDataTableState();
+  PaginatedDataTableState createState() => PaginatedDataTableState();
 }
 
 /// Holds the state of a [PaginatedDataTable].
@@ -185,7 +231,7 @@ class PaginatedDataTableState extends State<PaginatedDataTable> {
   @override
   void initState() {
     super.initState();
-    _firstRowIndex = PageStorage.of(context)?.readState(context) ?? widget.initialFirstRowIndex ?? 0;
+    _firstRowIndex = PageStorage.of(context)?.readState(context) as int ?? widget.initialFirstRowIndex ?? 0;
     widget.source.addListener(_handleDataSourceChanged);
     _handleDataSourceChanged();
   }
@@ -228,9 +274,9 @@ class PaginatedDataTableState extends State<PaginatedDataTable> {
   }
 
   DataRow _getBlankRowFor(int index) {
-    return new DataRow.byIndex(
+    return DataRow.byIndex(
       index: index,
-      cells: widget.columns.map<DataCell>((DataColumn column) => DataCell.empty).toList()
+      cells: widget.columns.map<DataCell>((DataColumn column) => DataCell.empty).toList(),
     );
   }
 
@@ -239,17 +285,17 @@ class PaginatedDataTableState extends State<PaginatedDataTable> {
     final List<DataCell> cells = widget.columns.map<DataCell>((DataColumn column) {
       if (!column.numeric) {
         haveProgressIndicator = true;
-        return const DataCell(const CircularProgressIndicator());
+        return const DataCell(CircularProgressIndicator());
       }
       return DataCell.empty;
     }).toList();
     if (!haveProgressIndicator) {
       haveProgressIndicator = true;
-      cells[0] = const DataCell(const CircularProgressIndicator());
+      cells[0] = const DataCell(CircularProgressIndicator());
     }
-    return new DataRow.byIndex(
+    return DataRow.byIndex(
       index: index,
-      cells: cells
+      cells: cells,
     );
   }
 
@@ -272,17 +318,27 @@ class PaginatedDataTableState extends State<PaginatedDataTable> {
     return result;
   }
 
-  final GlobalKey _tableKey = new GlobalKey();
+  void _handlePrevious() {
+    pageTo(math.max(_firstRowIndex - widget.rowsPerPage, 0));
+  }
+
+  void _handleNext() {
+    pageTo(_firstRowIndex + widget.rowsPerPage);
+  }
+
+  final GlobalKey _tableKey = GlobalKey();
 
   @override
   Widget build(BuildContext context) {
     // TODO(ianh): This whole build function doesn't handle RTL yet.
+    assert(debugCheckHasMaterialLocalizations(context));
     final ThemeData themeData = Theme.of(context);
+    final MaterialLocalizations localizations = MaterialLocalizations.of(context);
     // HEADER
     final List<Widget> headerWidgets = <Widget>[];
-    double leftPadding = 24.0;
+    double startPadding = 24.0;
     if (_selectedRowCount == 0) {
-      headerWidgets.add(new Expanded(child: widget.header));
+      headerWidgets.add(Expanded(child: widget.header));
       if (widget.header is ButtonBar) {
         // We adjust the padding when a button bar is present, because the
         // ButtonBar introduces 2 pixels of outside padding, plus 2 pixels
@@ -290,20 +346,19 @@ class PaginatedDataTableState extends State<PaginatedDataTable> {
         // pixels internally on each side, yet we want the left edge of the
         // inside of the button to line up with the 24.0 left inset.
         // TODO(ianh): Better magic. See https://github.com/flutter/flutter/issues/4460
-        leftPadding = 12.0;
+        startPadding = 12.0;
       }
-    } else if (_selectedRowCount == 1) {
-      // TODO(ianh): Real l10n.
-      headerWidgets.add(const Expanded(child: const Text('1 item selected')));
     } else {
-      headerWidgets.add(new Expanded(child: new Text('$_selectedRowCount items selected')));
+      headerWidgets.add(Expanded(
+        child: Text(localizations.selectedRowCountTitle(_selectedRowCount)),
+      ));
     }
     if (widget.actions != null) {
       headerWidgets.addAll(
         widget.actions.map<Widget>((Widget action) {
-          return new Padding(
+          return Padding(
             // 8.0 is the default padding of an icon button
-            padding: const EdgeInsets.only(left: 24.0 - 8.0 * 2.0),
+            padding: const EdgeInsetsDirectional.only(start: 24.0 - 8.0 * 2.0),
             child: action,
           );
         }).toList()
@@ -315,112 +370,139 @@ class PaginatedDataTableState extends State<PaginatedDataTable> {
     final List<Widget> footerWidgets = <Widget>[];
     if (widget.onRowsPerPageChanged != null) {
       final List<Widget> availableRowsPerPage = widget.availableRowsPerPage
-        .where((int value) => value <= _rowCount)
+        .where((int value) => value <= _rowCount || value == widget.rowsPerPage)
         .map<DropdownMenuItem<int>>((int value) {
-          return new DropdownMenuItem<int>(
+          return DropdownMenuItem<int>(
             value: value,
-            child: new Text('$value')
+            child: Text('$value'),
           );
         })
         .toList();
       footerWidgets.addAll(<Widget>[
-        const Text('Rows per page:'),
-        new DropdownButtonHideUnderline(
-          child: new DropdownButton<int>(
-            items: availableRowsPerPage,
-            value: widget.rowsPerPage,
-            onChanged: widget.onRowsPerPageChanged,
-            style: footerTextStyle,
-            iconSize: 24.0
-          )
+        Container(width: 14.0), // to match trailing padding in case we overflow and end up scrolling
+        Text(localizations.rowsPerPageTitle),
+        ConstrainedBox(
+          constraints: const BoxConstraints(minWidth: 64.0), // 40.0 for the text, 24.0 for the icon
+          child: Align(
+            alignment: AlignmentDirectional.centerEnd,
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<int>(
+                items: availableRowsPerPage.cast<DropdownMenuItem<int>>(),
+                value: widget.rowsPerPage,
+                onChanged: widget.onRowsPerPageChanged,
+                style: footerTextStyle,
+                iconSize: 24.0,
+              ),
+            ),
+          ),
         ),
       ]);
     }
     footerWidgets.addAll(<Widget>[
-      new Container(width: 32.0),
-      new Text(
-        '${_firstRowIndex + 1}\u2013${_firstRowIndex + widget.rowsPerPage} ${ _rowCountApproximate ? "of about" : "of" } $_rowCount'
+      Container(width: 32.0),
+      Text(
+        localizations.pageRowsInfoTitle(
+          _firstRowIndex + 1,
+          _firstRowIndex + widget.rowsPerPage,
+          _rowCount,
+          _rowCountApproximate,
+        ),
       ),
-      new Container(width: 32.0),
-      new IconButton(
+      Container(width: 32.0),
+      IconButton(
         icon: const Icon(Icons.chevron_left),
         padding: EdgeInsets.zero,
-        tooltip: 'Previous page',
-        onPressed: _firstRowIndex <= 0 ? null : () {
-          pageTo(math.max(_firstRowIndex - widget.rowsPerPage, 0));
-        }
+        tooltip: localizations.previousPageTooltip,
+        onPressed: _firstRowIndex <= 0 ? null : _handlePrevious,
       ),
-      new Container(width: 24.0),
-      new IconButton(
+      Container(width: 24.0),
+      IconButton(
         icon: const Icon(Icons.chevron_right),
         padding: EdgeInsets.zero,
-        tooltip: 'Next page',
-        onPressed: (!_rowCountApproximate && (_firstRowIndex + widget.rowsPerPage >= _rowCount)) ? null : () {
-          pageTo(_firstRowIndex + widget.rowsPerPage);
-        }
+        tooltip: localizations.nextPageTooltip,
+        onPressed: (!_rowCountApproximate && (_firstRowIndex + widget.rowsPerPage >= _rowCount)) ? null : _handleNext,
       ),
-      new Container(width: 14.0),
+      Container(width: 14.0),
     ]);
 
     // CARD
-    return new Card(
-      child: new Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: <Widget>[
-          new DefaultTextStyle(
-            // These typographic styles aren't quite the regular ones. We pick the closest ones from the regular
-            // list and then tweak them appropriately.
-            // See https://material.google.com/components/data-tables.html#data-tables-tables-within-cards
-            style: _selectedRowCount > 0 ? themeData.textTheme.subhead.copyWith(color: themeData.accentColor)
-                                         : themeData.textTheme.title.copyWith(fontWeight: FontWeight.w400),
-            child: IconTheme.merge(
-              data: const IconThemeData(
-                opacity: 0.54
+    return LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        return Card(
+          semanticContainer: false,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              Semantics(
+                container: true,
+                child: DefaultTextStyle(
+                  // These typographic styles aren't quite the regular ones. We pick the closest ones from the regular
+                  // list and then tweak them appropriately.
+                  // See https://material.io/design/components/data-tables.html#tables-within-cards
+                  style: _selectedRowCount > 0 ? themeData.textTheme.subtitle1.copyWith(color: themeData.accentColor)
+                                               : themeData.textTheme.headline6.copyWith(fontWeight: FontWeight.w400),
+                  child: IconTheme.merge(
+                    data: const IconThemeData(
+                      opacity: 0.54
+                    ),
+                    child: Ink(
+                      height: 64.0,
+                      color: _selectedRowCount > 0 ? themeData.secondaryHeaderColor : null,
+                      child: Padding(
+                        padding: EdgeInsetsDirectional.only(start: startPadding, end: 14.0),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: headerWidgets,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               ),
-              child: new ButtonTheme.bar(
-                child: new Container(
-                  height: 64.0,
-                  padding: new EdgeInsets.fromLTRB(leftPadding, 0.0, 14.0, 0.0),
-                  // TODO(ianh): This decoration will prevent ink splashes from being visible.
-                  // Instead, we should have a widget that prints the decoration on the material.
-                  // See https://github.com/flutter/flutter/issues/3782
-                  color: _selectedRowCount > 0 ? themeData.secondaryHeaderColor : null,
-                  child: new Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: headerWidgets
-                  )
-                )
-              )
-            )
-          ),
-          new SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: new DataTable(
-              key: _tableKey,
-              columns: widget.columns,
-              sortColumnIndex: widget.sortColumnIndex,
-              sortAscending: widget.sortAscending,
-              onSelectAll: widget.onSelectAll,
-              rows: _getRows(_firstRowIndex, widget.rowsPerPage)
-            )
-          ),
-          new DefaultTextStyle(
-            style: footerTextStyle,
-            child: IconTheme.merge(
-              data: const IconThemeData(
-                opacity: 0.54
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                dragStartBehavior: widget.dragStartBehavior,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(minWidth: constraints.minWidth),
+                  child: DataTable(
+                    key: _tableKey,
+                    columns: widget.columns,
+                    sortColumnIndex: widget.sortColumnIndex,
+                    sortAscending: widget.sortAscending,
+                    onSelectAll: widget.onSelectAll,
+                    dataRowHeight: widget.dataRowHeight,
+                    headingRowHeight: widget.headingRowHeight,
+                    horizontalMargin: widget.horizontalMargin,
+                    columnSpacing: widget.columnSpacing,
+                    showCheckboxColumn: widget.showCheckboxColumn,
+                    rows: _getRows(_firstRowIndex, widget.rowsPerPage),
+                  ),
+                ),
               ),
-              child: new Container(
-                height: 56.0,
-                child: new Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: footerWidgets
-                )
-              )
-            )
-          )
-        ]
-      )
+              DefaultTextStyle(
+                style: footerTextStyle,
+                child: IconTheme.merge(
+                  data: const IconThemeData(
+                    opacity: 0.54
+                  ),
+                  child: Container(
+                    // TODO(bkonyi): this won't handle text zoom correctly, https://github.com/flutter/flutter/issues/48522
+                    height: 56.0,
+                    child: SingleChildScrollView(
+                      dragStartBehavior: widget.dragStartBehavior,
+                      scrollDirection: Axis.horizontal,
+                      reverse: true,
+                      child: Row(
+                        children: footerWidgets,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

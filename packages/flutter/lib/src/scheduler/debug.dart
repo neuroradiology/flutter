@@ -1,4 +1,4 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -21,7 +21,14 @@ import 'package:flutter/foundation.dart';
 /// intra-frame output from inter-frame output, set [debugPrintEndFrameBanner]
 /// to true as well.
 ///
-/// See [SchedulerBinding.handleBeginFrame].
+/// See also:
+///
+///  * [debugProfilePaintsEnabled], which does something similar for
+///    painting but using the timeline view.
+///  * [debugPrintLayouts], which does something similar for layout but using
+///    console output.
+///  * The discussions at [WidgetsBinding.drawFrame] and at
+///    [SchedulerBinding.handleBeginFrame].
 bool debugPrintBeginFrameBanner = false;
 
 /// Print a banner at the end of each frame.
@@ -46,15 +53,15 @@ bool debugPrintScheduleFrameStacks = false;
 /// This function is used by the test framework to ensure that debug variables
 /// haven't been inadvertently changed.
 ///
-/// See [https://docs.flutter.io/flutter/scheduler/scheduler-library.html] for
-/// a complete list.
+/// See [the scheduler library](scheduler/scheduler-library.html) for a complete
+/// list.
 bool debugAssertAllSchedulerVarsUnset(String reason) {
   assert(() {
     if (debugPrintBeginFrameBanner ||
         debugPrintEndFrameBanner) {
-      throw new FlutterError(reason);
+      throw FlutterError(reason);
     }
     return true;
-  });
+  }());
   return true;
 }

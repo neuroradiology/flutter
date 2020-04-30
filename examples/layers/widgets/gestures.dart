@@ -1,4 +1,4 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -13,7 +13,7 @@ class _GesturePainter extends CustomPainter {
     this.scaleEnabled,
     this.tapEnabled,
     this.doubleTapEnabled,
-    this.longPressEnabled
+    this.longPressEnabled,
   });
 
   final double zoom;
@@ -27,14 +27,14 @@ class _GesturePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final Offset center = (size.center(Offset.zero) * zoom + offset);
+    final Offset center = size.center(Offset.zero) * zoom + offset;
     final double radius = size.width / 2.0 * zoom;
-    final Gradient gradient = new RadialGradient(
+    final Gradient gradient = RadialGradient(
       colors: forward ? <Color>[swatch.shade50, swatch.shade900]
                       : <Color>[swatch.shade900, swatch.shade50]
     );
-    final Paint paint = new Paint()
-      ..shader = gradient.createShader(new Rect.fromCircle(
+    final Paint paint = Paint()
+      ..shader = gradient.createShader(Rect.fromCircle(
         center: center,
         radius: radius,
       ));
@@ -56,10 +56,10 @@ class _GesturePainter extends CustomPainter {
 
 class GestureDemo extends StatefulWidget {
   @override
-  _GestureDemoState createState() => new _GestureDemoState();
+  GestureDemoState createState() => GestureDemoState();
 }
 
-class _GestureDemoState extends State<GestureDemo> {
+class GestureDemoState extends State<GestureDemo> {
 
   Offset _startingFocalPoint;
 
@@ -69,7 +69,29 @@ class _GestureDemoState extends State<GestureDemo> {
   double _previousZoom;
   double _zoom = 1.0;
 
-  MaterialColor _swatch = Colors.blue;
+  static const List<MaterialColor> kSwatches = <MaterialColor>[
+    Colors.red,
+    Colors.pink,
+    Colors.purple,
+    Colors.deepPurple,
+    Colors.indigo,
+    Colors.blue,
+    Colors.lightBlue,
+    Colors.cyan,
+    Colors.green,
+    Colors.lightGreen,
+    Colors.lime,
+    Colors.yellow,
+    Colors.amber,
+    Colors.orange,
+    Colors.deepOrange,
+    Colors.brown,
+    Colors.grey,
+    Colors.blueGrey,
+  ];
+  int _swatchIndex = 0;
+  MaterialColor _swatch = kSwatches.first;
+  MaterialColor get swatch => _swatch;
 
   bool _forward = true;
   bool _scaleEnabled = true;
@@ -87,7 +109,7 @@ class _GestureDemoState extends State<GestureDemo> {
 
   void _handleScaleUpdate(ScaleUpdateDetails details) {
     setState(() {
-      _zoom = (_previousZoom * details.scale);
+      _zoom = _previousZoom * details.scale;
 
       // Ensure that item under the focal point stays in the same place despite zooming
       final Offset normalizedOffset = (_startingFocalPoint - _previousOffset) / _previousZoom;
@@ -104,42 +126,10 @@ class _GestureDemoState extends State<GestureDemo> {
 
   void _handleColorChange() {
     setState(() {
-      if (_swatch == Colors.blueGrey)
-        _swatch = Colors.red;
-      else if (_swatch == Colors.red)
-        _swatch = Colors.pink;
-      else if (_swatch == Colors.pink)
-        _swatch = Colors.purple;
-      else if (_swatch == Colors.purple)
-        _swatch = Colors.deepPurple;
-      else if (_swatch == Colors.deepPurple)
-        _swatch = Colors.indigo;
-      else if (_swatch == Colors.indigo)
-        _swatch = Colors.blue;
-      else if (_swatch == Colors.blue)
-        _swatch = Colors.lightBlue;
-      else if (_swatch == Colors.lightBlue)
-        _swatch = Colors.cyan;
-      else if (_swatch == Colors.teal)
-        _swatch = Colors.green;
-      else if (_swatch == Colors.green)
-        _swatch = Colors.lightGreen;
-      else if (_swatch == Colors.lightGreen)
-        _swatch = Colors.lime;
-      else if (_swatch == Colors.lime)
-        _swatch = Colors.yellow;
-      else if (_swatch == Colors.yellow)
-        _swatch = Colors.amber;
-      else if (_swatch == Colors.amber)
-        _swatch = Colors.orange;
-      else if (_swatch == Colors.orange)
-        _swatch = Colors.deepOrange;
-      else if (_swatch == Colors.deepOrange)
-        _swatch = Colors.brown;
-      else if (_swatch == Colors.brown)
-        _swatch = Colors.grey;
-      else if (_swatch == Colors.grey)
-        _swatch = Colors.blueGrey;
+      _swatchIndex += 1;
+      if (_swatchIndex == kSwatches.length)
+        _swatchIndex = 0;
+      _swatch = kSwatches[_swatchIndex];
     });
   }
 
@@ -151,88 +141,89 @@ class _GestureDemoState extends State<GestureDemo> {
 
   @override
   Widget build(BuildContext context) {
-    return new Stack(
+    return Stack(
+      fit: StackFit.expand,
       children: <Widget>[
-        new GestureDetector(
+        GestureDetector(
           onScaleStart: _scaleEnabled ? _handleScaleStart : null,
           onScaleUpdate: _scaleEnabled ? _handleScaleUpdate : null,
           onTap: _tapEnabled ? _handleColorChange : null,
           onDoubleTap: _doubleTapEnabled ? _handleScaleReset : null,
           onLongPress: _longPressEnabled ? _handleDirectionChange : null,
-          child: new CustomPaint(
-            painter: new _GesturePainter(
+          child: CustomPaint(
+            painter: _GesturePainter(
               zoom: _zoom,
               offset: _offset,
-              swatch: _swatch,
+              swatch: swatch,
               forward: _forward,
               scaleEnabled: _scaleEnabled,
               tapEnabled: _tapEnabled,
               doubleTapEnabled: _doubleTapEnabled,
-              longPressEnabled: _longPressEnabled
-            )
-          )
+              longPressEnabled: _longPressEnabled,
+            ),
+          ),
         ),
-        new Positioned(
+        Positioned(
           bottom: 0.0,
           left: 0.0,
-          child: new Card(
-            child: new Container(
+          child: Card(
+            child: Container(
               padding: const EdgeInsets.all(4.0),
-              child: new Column(
+              child: Column(
                 children: <Widget>[
-                  new Row(
+                  Row(
                     children: <Widget>[
-                      new Checkbox(
+                      Checkbox(
                         value: _scaleEnabled,
-                        onChanged: (bool value) { setState(() { _scaleEnabled = value; }); }
+                        onChanged: (bool value) { setState(() { _scaleEnabled = value; }); },
                       ),
                       const Text('Scale'),
-                    ]
+                    ],
                   ),
-                  new Row(
+                  Row(
                     children: <Widget>[
-                      new Checkbox(
+                      Checkbox(
                         value: _tapEnabled,
-                        onChanged: (bool value) { setState(() { _tapEnabled = value; }); }
+                        onChanged: (bool value) { setState(() { _tapEnabled = value; }); },
                       ),
                       const Text('Tap'),
-                    ]
+                    ],
                   ),
-                  new Row(
+                  Row(
                     children: <Widget>[
-                      new Checkbox(
+                      Checkbox(
                         value: _doubleTapEnabled,
-                        onChanged: (bool value) { setState(() { _doubleTapEnabled = value; }); }
+                        onChanged: (bool value) { setState(() { _doubleTapEnabled = value; }); },
                       ),
                       const Text('Double Tap'),
-                    ]
+                    ],
                   ),
-                  new Row(
+                  Row(
                     children: <Widget>[
-                      new Checkbox(
+                      Checkbox(
                         value: _longPressEnabled,
-                        onChanged: (bool value) { setState(() { _longPressEnabled = value; }); }
+                        onChanged: (bool value) { setState(() { _longPressEnabled = value; }); },
                       ),
                       const Text('Long Press'),
-                    ]
+                    ],
                   ),
                 ],
-                crossAxisAlignment: CrossAxisAlignment.start
-              )
-            )
-          )
+                crossAxisAlignment: CrossAxisAlignment.start,
+              ),
+            ),
+          ),
         ),
-      ]
+      ],
     );
   }
 }
 
 void main() {
-  runApp(new MaterialApp(
-    theme: new ThemeData.dark(),
-    home: new Scaffold(
-      appBar: new AppBar(title: const Text('Gestures Demo')),
-      body: new GestureDemo()
-    )
+  runApp(MaterialApp(
+    theme: ThemeData.dark(),
+    home: Scaffold(
+      appBar: AppBar(title: const Text('Gestures Demo')),
+      body: GestureDemo(),
+    ),
   ));
 }

@@ -1,84 +1,122 @@
-// Copyright 2015 The Chromium Authors. All rights reserved.
+// Copyright 2014 The Flutter Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 import 'dart:async';
 
-import 'package:meta/meta.dart' show required;
-
+import '../android/android_builder.dart';
 import '../android/android_sdk.dart';
-import '../android/gradle.dart';
-import '../base/common.dart';
+import '../android/gradle_utils.dart';
+import '../base/terminal.dart';
 import '../build_info.dart';
-import '../globals.dart';
+import '../cache.dart';
+import '../globals.dart' as globals;
+import '../project.dart';
+import '../reporting/reporting.dart';
+import '../runner/flutter_command.dart' show FlutterCommandResult;
 import 'build.dart';
 
-export '../android/android_device.dart' show AndroidDevice;
-
-class ApkKeystoreInfo {
-  ApkKeystoreInfo({
-    @required this.keystore,
-    this.password,
-    this.keyAlias,
-    @required this.keyPassword,
-  }) {
-    assert(keystore != null);
-  }
-
-  final String keystore;
-  final String password;
-  final String keyAlias;
-  final String keyPassword;
-}
-
 class BuildApkCommand extends BuildSubCommand {
-  BuildApkCommand() {
+  BuildApkCommand({bool verboseHelp = false}) {
+    addTreeShakeIconsFlag();
     usesTargetOption();
-    addBuildModeFlags();
+    addBuildModeFlags(verboseHelp: verboseHelp);
+    usesFlavorOption();
     usesPubOption();
+    usesBuildNumberOption();
+    usesBuildNameOption();
+    addShrinkingFlag();
+    addSplitDebugInfoOption();
+    addDartObfuscationOption();
+    usesDartDefineOption();
+    usesExtraFrontendOptions();
+    addEnableExperimentation(hide: !verboseHelp);
+    argParser
+      ..addFlag('split-per-abi',
+        negatable: false,
+        help: 'Whether to split the APKs per ABIs. '
+              'To learn more, see: https://developer.android.com/studio/build/configure-apk-splits#configure-abi-split',
+      )
+      ..addMultiOption('target-platform',
+        splitCommas: true,
+        defaultsTo: <String>['android-arm', 'android-arm64', 'android-x64'],
+        allowed: <String>['android-arm', 'android-arm64', 'android-x86', 'android-x64'],
+        help: 'The target platform for which the app is compiled.',
+      );
+    usesTrackWidgetCreation(verboseHelp: verboseHelp);
   }
 
   @override
   final String name = 'apk';
 
   @override
+  Future<Set<DevelopmentArtifact>> get requiredArtifacts async => <DevelopmentArtifact>{
+    DevelopmentArtifact.androidGenSnapshot,
+  };
+
+  @override
   final String description = 'Build an Android APK file from your app.\n\n'
-    'This command can build debug and release versions of your application. \'debug\' builds support\n'
-    'debugging and a quick development cycle. \'release\' builds don\'t support debugging and are\n'
+    "This command can build debug and release versions of your application. 'debug' builds support "
+    "debugging and a quick development cycle. 'release' builds don't support debugging and are "
     'suitable for deploying to app stores.';
 
   @override
-  Future<Null> runCommand() async {
-    await super.runCommand();
+  Future<Map<CustomDimensions, String>> get usageValues async {
+    final Map<CustomDimensions, String> usage = <CustomDimensions, String>{};
 
-    final BuildMode buildMode = getBuildMode();
-    await buildApk(buildMode: buildMode, target: targetFile);
+    usage[CustomDimensions.commandBuildApkTargetPlatform] =
+        stringsArg('target-platform').join(',');
+    usage[CustomDimensions.commandBuildApkSplitPerAbi] =
+        boolArg('split-per-abi').toString();
+
+    if (boolArg('release')) {
+      usage[CustomDimensions.commandBuildApkBuildMode] = 'release';
+    } else if (boolArg('debug')) {
+      usage[CustomDimensions.commandBuildApkBuildMode] = 'debug';
+    } else if (boolArg('profile')) {
+      usage[CustomDimensions.commandBuildApkBuildMode] = 'profile';
+    } else {
+      // The build defaults to release.
+      usage[CustomDimensions.commandBuildApkBuildMode] = 'release';
+    }
+    return usage;
   }
-}
 
-Future<Null> buildApk({
-  String target,
-  BuildMode buildMode: BuildMode.debug,
-  String kernelPath,
-}) async {
-  if (!isProjectUsingGradle()) {
-    throwToolExit(
-        'The build process for Android has changed, and the current project configuration\n'
-        'is no longer valid. Please consult\n\n'
-        '  https://github.com/flutter/flutter/wiki/Upgrading-Flutter-projects-to-build-with-gradle\n\n'
-        'for details on how to upgrade the project.'
+  @override
+  Future<FlutterCommandResult> runCommand() async {
+    if (androidSdk == null) {
+      exitWithNoSdkMessage();
+    }
+    final BuildInfo buildInfo = getBuildInfo();
+    final AndroidBuildInfo androidBuildInfo = AndroidBuildInfo(
+      buildInfo,
+      splitPerAbi: boolArg('split-per-abi'),
+      targetArchs: stringsArg('target-platform').map<AndroidArch>(getAndroidArchForName),
+      shrink: boolArg('shrink'),
     );
+
+    if (buildInfo.isRelease && !androidBuildInfo.splitPerAbi && androidBuildInfo.targetArchs.length > 1) {
+      final String targetPlatforms = stringsArg('target-platform').join(', ');
+
+      globals.printStatus('You are building a fat APK that includes binaries for '
+                  '$targetPlatforms.', emphasis: true, color: TerminalColor.green);
+      globals.printStatus('If you are deploying the app to the Play Store, '
+                  "it's recommended to use app bundles or split the APK to reduce the APK size.", emphasis: true);
+      globals.printStatus('To generate an app bundle, run:', emphasis: true, indent: 4);
+      globals.printStatus('flutter build appbundle '
+                  '--target-platform ${targetPlatforms.replaceAll(' ', '')}',indent: 8);
+      globals.printStatus('Learn more on: https://developer.android.com/guide/app-bundle',indent: 8);
+      globals.printStatus('To split the APKs per ABI, run:', emphasis: true, indent: 4);
+      globals.printStatus('flutter build apk '
+                  '--target-platform ${targetPlatforms.replaceAll(' ', '')} '
+                  '--split-per-abi', indent: 8);
+      globals.printStatus('Learn more on:  https://developer.android.com/studio/build/configure-apk-splits#configure-abi-split',indent: 8);
+    }
+    await androidBuilder.buildApk(
+      project: FlutterProject.current(),
+      target: targetFile,
+      androidBuildInfo: androidBuildInfo,
+    );
+    return FlutterCommandResult.success();
   }
-
-  // Validate that we can find an android sdk.
-  if (androidSdk == null)
-    throwToolExit('No Android SDK found. Try setting the ANDROID_HOME environment variable.');
-
-  final List<String> validationResult = androidSdk.validateSdkWellFormed();
-  if (validationResult.isNotEmpty) {
-    validationResult.forEach(printError);
-    throwToolExit('Try re-installing or updating your Android SDK.');
-  }
-
-  return buildGradleProject(buildMode, target, kernelPath);
 }
